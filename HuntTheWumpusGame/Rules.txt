@@ -1,0 +1,15 @@
+You are in one of the 20 rooms of the cave. In some of the other rooms Wampuses are sleeping.
+You have a bow and arrow, to win you need to shoot all the Wampuses in the cave.
+The Wampus is a large monster that feeds on humans. He is very heavy, so the giant bats (another cave dweller)
+can't move him. He has suction cups on his legs, so he doesn't fall into bottomless holes.
+Wampus gives off a disgusting odor, so if he's in the next room, you'll smell it.
+However, Wampus has sensitive hearing, so he wakes up at the sound of a bow shot and can go to sleep in one
+of the neighboring rooms.
+The rooms where the noise comes from are inhabited by giant bats. If you enter such a room,
+they will take you to a random room in the cave.
+In the rooms where the wind blows, there are bottomless holes in which you will die.
+Now more about your arrows. They are magical - they can turn and fly through up to 5 rooms connected by tunnels.
+However, if you enter the wrong sequence of rooms, the arrow will end up in a random room.
+And if you run out of arrows, you lose.
+Before the game starts you can enter the number of Wampuses and bats in the game, but remember that
+there can't be more than 19 of them.

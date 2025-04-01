@@ -1,0 +1,9 @@
+Available actions:
+>>> quit - quit the game
+>>> configure - configure the number of wumpuses and bats. You can only do this before you start the game.
+>>> start - start the game
+>>> restart - quit the current game
+>>> move - go to the next room
+>>> shoot - shoot from a bow
+>>> rules - see the rules of the game
+>>> help - see this text
