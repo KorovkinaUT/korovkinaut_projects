@@ -1,0 +1,167 @@
+package dispatcher
+
+import (
+	"reflect"
+	"testing"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/repository"
+	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
+	scrapperhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/scrapper"
+)
+
+func TestDispatcher_TrackCommand_Success(t *testing.T) {
+	parser := schedulerlink.NewService()
+
+	var (
+		addCalled bool
+		gotChatID int64
+		gotReq    scrapperhttp.AddLinkRequest
+	)
+
+	trackHandler := NewTrack(parser, func(chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error) {
+		addCalled = true
+		gotChatID = chatID
+		gotReq = request
+
+		return scrapperhttp.LinkResponse{
+			ID:   1,
+			URL:  request.Link,
+			Tags: request.Tags,
+		}, nil
+	})
+
+	dispatcher := NewDispatcher([]Handler{trackHandler})
+	chatID := int64(1)
+
+	gotStart := dispatcher.Dispatch(newCommandMessage(chatID, "/track"))
+	gotLink := dispatcher.Dispatch(newTextMessage(chatID, "https://github.com/user/repo"))
+	dialogAfterLink := trackHandler.States().Get(chatID)
+	gotFinish := dispatcher.Dispatch(newTextMessage(chatID, "backend, go"))
+	dialogAfterFinish := trackHandler.States().Get(chatID)
+
+	wantStart := "Отправьте ссылку для отслеживания. Чтобы отменить процесс введите /cancel."
+	if gotStart != wantStart {
+		t.Errorf("unexpected response on /track:\nwant: %q\ngot:  %q", wantStart, gotStart)
+	}
+
+	wantLink := "Введите теги через запятую или отправьте пустое сообщение. Чтобы прервать процесс введите /cancel."
+	if gotLink != wantLink {
+		t.Errorf("unexpected response after valid link:\nwant: %q\ngot:  %q", wantLink, gotLink)
+	}
+
+	if dialogAfterLink.State != StateWaitingTrackTags {
+		t.Errorf("unexpected state after valid link: got %v, want %v", dialogAfterLink.State, StateWaitingTrackTags)
+	}
+
+	if dialogAfterLink.Link != "https://github.com/user/repo" {
+		t.Errorf("unexpected saved link: got %q, want %q", dialogAfterLink.Link, "https://github.com/user/repo")
+	}
+
+	wantFinish := "Ссылка добавлена в отслеживание."
+	if gotFinish != wantFinish {
+		t.Errorf("unexpected response after tags:\nwant: %q\ngot:  %q", wantFinish, gotFinish)
+	}
+
+	if !addCalled {
+		t.Errorf("expected addLink to be called")
+	}
+
+	if gotChatID != chatID {
+		t.Errorf("unexpected chatID in addLink: got %d, want %d", gotChatID, chatID)
+	}
+
+	wantReq := scrapperhttp.AddLinkRequest{
+		Link: "https://github.com/user/repo",
+		Tags: []string{"backend", "go"},
+	}
+	if !reflect.DeepEqual(gotReq, wantReq) {
+		t.Errorf("unexpected addLink request:\nwant: %+v\ngot:  %+v", wantReq, gotReq)
+	}
+
+	if dialogAfterFinish.State != StateIdle {
+		t.Errorf("unexpected state after finish: got %v, want %v", dialogAfterFinish.State, StateIdle)
+	}
+}
+
+func TestDispatcher_TrackCommand_InvalidLink(t *testing.T) {
+	parser := schedulerlink.NewService()
+
+	addCalled := false
+	trackHandler := NewTrack(parser, func(chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error) {
+		addCalled = true
+		return scrapperhttp.LinkResponse{}, nil
+	})
+
+	dispatcher := NewDispatcher([]Handler{trackHandler})
+	chatID := int64(1)
+
+	startMsg := newCommandMessage(chatID, "/track")
+	invalidLinkMsg := newTextMessage(chatID, "tbank://github.com/user/repo")
+
+	gotStart := dispatcher.Dispatch(startMsg)
+	gotInvalid := dispatcher.Dispatch(invalidLinkMsg)
+	dialogAfterInvalid := trackHandler.States().Get(chatID)
+
+	wantStart := "Отправьте ссылку для отслеживания. Чтобы отменить процесс введите /cancel."
+	if gotStart != wantStart {
+		t.Errorf("unexpected response on /track:\nwant: %q\ngot:  %q", wantStart, gotStart)
+	}
+
+	wantInvalid := "Некорректная ссылка."
+	if gotInvalid != wantInvalid {
+		t.Errorf("unexpected response for invalid link:\nwant: %q\ngot:  %q", wantInvalid, gotInvalid)
+	}
+
+	if addCalled {
+		t.Errorf("addLink must not be called for invalid link")
+	}
+
+	if dialogAfterInvalid.State != StateWaitingTrackLink {
+		t.Errorf("unexpected state after invalid link: got %v, want %v", dialogAfterInvalid.State, StateWaitingTrackLink)
+	}
+}
+
+func TestDispatcher_TrackCommand_AlreadyTracked(t *testing.T) {
+	parser := schedulerlink.NewService()
+
+	trackHandler := NewTrack(parser, func(chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error) {
+		return scrapperhttp.LinkResponse{}, repository.ErrLinkAlreadyTracked
+	})
+
+	dispatcher := NewDispatcher([]Handler{trackHandler})
+	chatID := int64(1)
+
+	startMsg := newCommandMessage(chatID, "/track")
+	linkMsg := newTextMessage(chatID, "https://github.com/user/repo")
+	tagsMsg := newTextMessage(chatID, "backend, go")
+
+	gotStart := dispatcher.Dispatch(startMsg)
+	gotLink := dispatcher.Dispatch(linkMsg)
+	gotFinish := dispatcher.Dispatch(tagsMsg)
+
+	wantStart := "Отправьте ссылку для отслеживания. Чтобы отменить процесс введите /cancel."
+	if gotStart != wantStart {
+		t.Errorf("unexpected response on /track:\nwant: %q\ngot:  %q", wantStart, gotStart)
+	}
+
+	wantLink := "Введите теги через запятую или отправьте пустое сообщение. Чтобы прервать процесс введите /cancel."
+	if gotLink != wantLink {
+		t.Errorf("unexpected response after valid link:\nwant: %q\ngot:  %q", wantLink, gotLink)
+	}
+
+	wantFinish := "Ссылка уже отслеживается"
+	if gotFinish != wantFinish {
+		t.Errorf("unexpected response for already tracked link:\nwant: %q\ngot:  %q", wantFinish, gotFinish)
+	}
+}
+
+func newTextMessage(chatID int64, text string) *tgbotapi.Message {
+	return &tgbotapi.Message{
+		Text: text,
+		Chat: &tgbotapi.Chat{
+			ID: chatID,
+		},
+	}
+}
