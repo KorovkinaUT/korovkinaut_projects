@@ -2,9 +2,6 @@ openapi: 3.1.0
 info:
   title: Bot API
   version: 1.0.0
-  contact:
-    name: Alexander Biryukov
-    url: https://github.com
 paths:
   /updates:
     post:
