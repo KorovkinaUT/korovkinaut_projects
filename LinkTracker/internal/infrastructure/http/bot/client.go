@@ -2,6 +2,7 @@ package bothttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,7 +21,7 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) SendUpdate(update LinkUpdate) error {
+func (c *Client) SendUpdate(ctx context.Context, update LinkUpdate) error {
 	endpoint := fmt.Sprintf("%s/updates", c.baseURL)
 
 	body, err := json.Marshal(update)
@@ -28,7 +29,7 @@ func (c *Client) SendUpdate(update LinkUpdate) error {
 		return fmt.Errorf("marshal send update request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build send update request: %w", err)
 	}

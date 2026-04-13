@@ -3,9 +3,9 @@ package updates
 import (
 	"context"
 	"fmt"
-	"time"
 
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/update"
 	githubhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/github"
 )
 
@@ -23,16 +23,24 @@ func (c *GitHubClient) Type() schedulerlink.LinkType {
 	return schedulerlink.TypeGitHub
 }
 
-func (c *GitHubClient) GetUpdatedAt(ctx context.Context, link schedulerlink.SchedulerLink) (time.Time, error) {
+func (c *GitHubClient) GetEvents(
+	ctx context.Context,
+	link schedulerlink.SchedulerLink,
+) ([]update.Event, error) {
 	githubLink, ok := link.(schedulerlink.GitHubLink)
 	if !ok {
-		return time.Time{}, fmt.Errorf("expected github link, got %T", link)
+		return nil, fmt.Errorf("expected github link, got %T", link)
 	}
 
-	updatedAt, err := c.client.GetRepositoryUpdatedAt(ctx, githubLink.Owner, githubLink.Repo)
+	events, err := c.client.GetRepositoryEvents(ctx, githubLink.Owner, githubLink.Repo)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("get github updated at: %w", err)
+		return nil, fmt.Errorf("get github events: %w", err)
 	}
 
-	return updatedAt, nil
+	result := make([]update.Event, 0, len(events))
+	for _, event := range events {
+		result = append(result, event)
+	}
+
+	return result, nil
 }

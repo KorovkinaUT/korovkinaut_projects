@@ -43,6 +43,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 				return
 			}
 		}),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
 	)
 	if err != nil {
 		return err

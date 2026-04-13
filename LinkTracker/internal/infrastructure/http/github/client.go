@@ -5,18 +5,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/update"
 )
 
-// Client for github updates requests
+const previewLimit = 200
+
+// Client for GitHub updates requests
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// For github response
-type RepositoryResponse struct {
-	UpdatedAt time.Time `json:"updated_at"`
+type UserResponse struct {
+	Login string `json:"login"`
+}
+
+type IssueResponse struct {
+	Title       string       `json:"title"`
+	Body        string       `json:"body"`
+	CreatedAt   time.Time    `json:"created_at"`
+	User        UserResponse `json:"user"`
+	PullRequest *struct{}    `json:"pull_request,omitempty"`
 }
 
 func NewClient(baseURL string, httpClient *http.Client) *Client {
@@ -26,16 +38,21 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) GetRepositoryUpdatedAt(
+func (c *Client) GetRepositoryEvents(
 	ctx context.Context,
 	owner string,
 	repo string,
-) (time.Time, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, repo)
+) ([]update.GitHubEvent, error) {
+	endpoint := fmt.Sprintf(
+		"%s/repos/%s/%s/issues?state=all&sort=created&direction=desc",
+		c.baseURL,
+		owner,
+		repo,
+	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("build github request: %w", err)
+		return nil, fmt.Errorf("build github request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -43,18 +60,43 @@ func (c *Client) GetRepositoryUpdatedAt(
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("send github request: %w", err)
+		return nil, fmt.Errorf("send github request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return time.Time{}, fmt.Errorf("github returned unexpected status: %s", resp.Status)
+		return nil, fmt.Errorf("github returned unexpected status: %s", resp.Status)
 	}
 
-	var repository RepositoryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&repository); err != nil {
-		return time.Time{}, fmt.Errorf("decode github response: %w", err)
+	var issues []IssueResponse
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		return nil, fmt.Errorf("decode github response: %w", err)
 	}
 
-	return repository.UpdatedAt, nil
+	events := make([]update.GitHubEvent, 0, len(issues))
+	for _, issue := range issues {
+		eventType := update.GitHubEventIssue
+		if issue.PullRequest != nil {
+			eventType = update.GitHubEventPullRequest
+		}
+
+		events = append(events, update.GitHubEvent{
+			Type:         eventType,
+			Title:        issue.Title,
+			Username:     issue.User.Login,
+			CreationTime: issue.CreatedAt,
+			Preview:      buildPreview(issue.Body),
+		})
+	}
+
+	return events, nil
+}
+
+func buildPreview(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= previewLimit {
+		return text
+	}
+
+	return text[:previewLimit]
 }

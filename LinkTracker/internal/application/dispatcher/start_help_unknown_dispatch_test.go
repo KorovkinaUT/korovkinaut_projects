@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"math/rand"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ type mockCommand struct{}
 
 func (mockCommand) Command() string     { return "cmd" }
 func (mockCommand) Description() string { return "descr" }
-func (mockCommand) Handle(msg *tgbotapi.Message) string {
+func (mockCommand) Handle(ctx context.Context, msg *tgbotapi.Message) string {
 	return "resp"
 }
 
@@ -25,12 +26,15 @@ type mockHandler struct {
 
 func (h mockHandler) Command() string     { return h.command }
 func (h mockHandler) Description() string { return h.description }
-func (h mockHandler) Handle(msg *tgbotapi.Message) string {
+func (h mockHandler) Handle(ctx context.Context, msg *tgbotapi.Message) string {
 	(*h.calls)++
 	return h.response
 }
 
 func TestDispatcher_Dispatch_Start(t *testing.T) {
+	// arrange
+	ctx := context.Background()
+
 	startCalls := 0
 	otherCalls := 0
 
@@ -51,8 +55,10 @@ func TestDispatcher_Dispatch_Start(t *testing.T) {
 
 	msg := newCommandMessage(1, "/start")
 
-	got := dispatcher.Dispatch(msg)
+	// act
+	got := dispatcher.Dispatch(ctx, msg)
 
+	// assert
 	want := "start response"
 
 	if got != want {
@@ -69,20 +75,28 @@ func TestDispatcher_Dispatch_Start(t *testing.T) {
 }
 
 func TestDispatcher_Dispatch_Help(t *testing.T) {
+	// arrange
+	ctx := context.Background()
+
 	dispatcher := NewDispatcher([]Handler{
 		mockCommand{},
 	})
 
 	msg := newCommandMessage(1, "/help")
 
-	got := dispatcher.Dispatch(msg)
+	// act
+	got := dispatcher.Dispatch(ctx, msg)
 
+	// assert
 	if !strings.Contains(got, "/cmd - descr") {
 		t.Errorf("help response must contain mock command description, got %q", got)
 	}
 }
 
 func TestDispatcher_Dispatch_UnknownCommand(t *testing.T) {
+	// arrange
+	ctx := context.Background()
+
 	dispatcher := NewDispatcher([]Handler{
 		mockHandler{
 			command:     "start",
@@ -105,9 +119,11 @@ func TestDispatcher_Dispatch_UnknownCommand(t *testing.T) {
 		},
 	}
 
-	gotCommand := dispatcher.Dispatch(commandMsg)
-	gotText := dispatcher.Dispatch(textMsg)
+	// act
+	gotCommand := dispatcher.Dispatch(ctx, commandMsg)
+	gotText := dispatcher.Dispatch(ctx, textMsg)
 
+	// assert
 	if gotCommand != want {
 		t.Errorf("unexpected response for unknown command: got %q, want %q", gotCommand, want)
 	}

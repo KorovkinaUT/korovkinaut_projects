@@ -1,6 +1,7 @@
 package scrapperhttp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -22,6 +23,8 @@ func NewTgChatHandler(subscriptions *service.SubscriptionService) *TgChatHandler
 }
 
 func (h *TgChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	chatID, ok := parseChatIDFromPath(r.URL.Path)
 	if !ok || chatID <= 0 {
 		writeAPIError(w, http.StatusBadRequest, "invalid request parameters", "invalid chat id")
@@ -30,16 +33,16 @@ func (h *TgChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPost:
-		h.handleRegisterChat(w, chatID)
+		h.handleRegisterChat(ctx, w, chatID)
 	case http.MethodDelete:
-		h.handleDeleteChat(w, chatID)
+		h.handleDeleteChat(ctx, w, chatID)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *TgChatHandler) handleRegisterChat(w http.ResponseWriter, chatID int64) {
-	err := h.subscriptions.RegisterChat(chatID)
+func (h *TgChatHandler) handleRegisterChat(ctx context.Context, w http.ResponseWriter, chatID int64) {
+	err := h.subscriptions.RegisterChat(ctx, chatID)
 	if err == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -53,8 +56,8 @@ func (h *TgChatHandler) handleRegisterChat(w http.ResponseWriter, chatID int64) 
 	}
 }
 
-func (h *TgChatHandler) handleDeleteChat(w http.ResponseWriter, chatID int64) {
-	err := h.subscriptions.DeleteChat(chatID)
+func (h *TgChatHandler) handleDeleteChat(ctx context.Context, w http.ResponseWriter, chatID int64) {
+	err := h.subscriptions.DeleteChat(ctx, chatID)
 	if err == nil {
 		w.WriteHeader(http.StatusOK)
 		return

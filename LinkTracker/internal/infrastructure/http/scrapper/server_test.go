@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/service"
@@ -12,6 +13,7 @@ import (
 )
 
 func TestScrapperServer_AddAndListLink(t *testing.T) {
+	// arrange
 	ts := newTestScrapperServer()
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
@@ -40,6 +42,7 @@ func TestScrapperServer_AddAndListLink(t *testing.T) {
 	}
 	listReq.Header.Set("Tg-Chat-Id", "1")
 
+	// act
 	registerResp, err := http.DefaultClient.Do(registerReq)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +66,7 @@ func TestScrapperServer_AddAndListLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// assert
 	if registerResp.StatusCode != http.StatusOK {
 		t.Errorf("unexpected register status: got %d, want %d", registerResp.StatusCode, http.StatusOK)
 	}
@@ -88,13 +92,14 @@ func TestScrapperServer_AddAndListLink(t *testing.T) {
 			t.Errorf("unexpected url: got %q, want %q", listResult.Links[0].URL, "https://github.com/user/repo")
 		}
 
-		if !equalStringSlices(listResult.Links[0].Tags, []string{"backend", "go"}) {
+		if !slices.Equal(listResult.Links[0].Tags, []string{"backend", "go"}) {
 			t.Errorf("unexpected tags: got %#v, want %#v", listResult.Links[0].Tags, []string{"backend", "go"})
 		}
 	}
 }
 
 func TestScrapperServer_AddAndRemoveLink(t *testing.T) {
+	// arrange
 	ts := newTestScrapperServer()
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
@@ -137,6 +142,7 @@ func TestScrapperServer_AddAndRemoveLink(t *testing.T) {
 	}
 	listReq.Header.Set("Tg-Chat-Id", "1")
 
+	// act
 	registerResp, err := http.DefaultClient.Do(registerReq)
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +172,7 @@ func TestScrapperServer_AddAndRemoveLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// assert
 	if registerResp.StatusCode != http.StatusOK {
 		t.Errorf("unexpected register status: got %d, want %d", registerResp.StatusCode, http.StatusOK)
 	}
@@ -192,6 +199,7 @@ func TestScrapperServer_AddAndRemoveLink(t *testing.T) {
 }
 
 func TestScrapperServer_RemoveLinkFromNonExistingChat(t *testing.T) {
+	// arrange
 	ts := newTestScrapperServer()
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
@@ -234,6 +242,7 @@ func TestScrapperServer_RemoveLinkFromNonExistingChat(t *testing.T) {
 	}
 	listReq.Header.Set("Tg-Chat-Id", "1")
 
+	// act
 	registerResp, err := http.DefaultClient.Do(registerReq)
 	if err != nil {
 		t.Fatal(err)
@@ -263,6 +272,7 @@ func TestScrapperServer_RemoveLinkFromNonExistingChat(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// assert
 	if registerResp.StatusCode != http.StatusOK {
 		t.Errorf("unexpected register status: got %d, want %d", registerResp.StatusCode, http.StatusOK)
 	}
@@ -289,6 +299,7 @@ func TestScrapperServer_RemoveLinkFromNonExistingChat(t *testing.T) {
 }
 
 func TestScrapperServer_AddLinkToNonExistingChat(t *testing.T) {
+	// arrange
 	ts := newTestScrapperServer()
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
@@ -311,6 +322,7 @@ func TestScrapperServer_AddLinkToNonExistingChat(t *testing.T) {
 	addReq.Header.Set("Content-Type", "application/json")
 	addReq.Header.Set("Tg-Chat-Id", "2")
 
+	// act
 	registerResp, err := http.DefaultClient.Do(registerReq)
 	if err != nil {
 		t.Fatal(err)
@@ -323,6 +335,7 @@ func TestScrapperServer_AddLinkToNonExistingChat(t *testing.T) {
 	}
 	defer addResp.Body.Close()
 
+	// assert
 	if registerResp.StatusCode != http.StatusOK {
 		t.Errorf("unexpected register status: got %d, want %d", registerResp.StatusCode, http.StatusOK)
 	}
@@ -333,6 +346,7 @@ func TestScrapperServer_AddLinkToNonExistingChat(t *testing.T) {
 }
 
 func TestScrapperServer_WorkWithDeletedChat(t *testing.T) {
+	// arrange
 	ts := newTestScrapperServer()
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
@@ -360,6 +374,7 @@ func TestScrapperServer_WorkWithDeletedChat(t *testing.T) {
 	addReq.Header.Set("Content-Type", "application/json")
 	addReq.Header.Set("Tg-Chat-Id", "1")
 
+	// act
 	registerResp, err := http.DefaultClient.Do(registerReq)
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +393,7 @@ func TestScrapperServer_WorkWithDeletedChat(t *testing.T) {
 	}
 	defer addResp.Body.Close()
 
+	// assert
 	if registerResp.StatusCode != http.StatusOK {
 		t.Errorf("unexpected register status: got %d, want %d", registerResp.StatusCode, http.StatusOK)
 	}
@@ -392,6 +408,7 @@ func TestScrapperServer_WorkWithDeletedChat(t *testing.T) {
 }
 
 func TestScrapperServer_DeleteNonExistingChat(t *testing.T) {
+	// arrange
 	ts := newTestScrapperServer()
 
 	deleteReq, err := http.NewRequest(http.MethodDelete, ts.URL+"/tg-chat/1", nil)
@@ -399,12 +416,14 @@ func TestScrapperServer_DeleteNonExistingChat(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// act
 	deleteResp, err := http.DefaultClient.Do(deleteReq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer deleteResp.Body.Close()
 
+	// assert
 	if deleteResp.StatusCode != http.StatusNotFound {
 		t.Errorf("unexpected delete status: got %d, want %d", deleteResp.StatusCode, http.StatusNotFound)
 	}
@@ -420,18 +439,4 @@ func newTestScrapperServer() *httptest.Server {
 	mux.Handle("/links", NewLinksHandler(subscriptionService))
 
 	return httptest.NewServer(mux)
-}
-
-func equalStringSlices(got []string, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-
-	return true
 }

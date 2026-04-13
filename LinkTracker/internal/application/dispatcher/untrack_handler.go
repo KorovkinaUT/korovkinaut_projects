@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,12 +15,12 @@ import (
 
 type Untrack struct {
 	parser     *schedulerlink.Service
-	removeLink func(chatID int64, request scrapperhttp.RemoveLinkRequest) (scrapperhttp.LinkResponse, error)
+	removeLink func(ctx context.Context, chatID int64, request scrapperhttp.RemoveLinkRequest) (scrapperhttp.LinkResponse, error)
 }
 
 func NewUntrack(
 	parser *schedulerlink.Service,
-	removeLink func(chatID int64, request scrapperhttp.RemoveLinkRequest) (scrapperhttp.LinkResponse, error),
+	removeLink func(ctx context.Context, chatID int64, request scrapperhttp.RemoveLinkRequest) (scrapperhttp.LinkResponse, error),
 ) Untrack {
 	return Untrack{
 		parser:     parser,
@@ -32,7 +33,7 @@ func (h Untrack) Description() string {
 	return "прекратить отслеживание ссылки"
 }
 
-func (h Untrack) Handle(msg *tgbotapi.Message) string {
+func (h Untrack) Handle(ctx context.Context, msg *tgbotapi.Message) string {
 	if msg == nil || msg.Chat == nil {
 		return "Не удалось определить чат."
 	}
@@ -49,7 +50,7 @@ func (h Untrack) Handle(msg *tgbotapi.Message) string {
 		return "Некорректная ссылка."
 	}
 
-	_, err := h.removeLink(chatID, scrapperhttp.RemoveLinkRequest{Link: link})
+	_, err := h.removeLink(ctx, chatID, scrapperhttp.RemoveLinkRequest{Link: link})
 	if err != nil {
 		if errors.Is(err, repository.ErrChatNotFound) {
 			return "Не удалось найти чат."

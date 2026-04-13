@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -10,7 +11,14 @@ import (
 )
 
 func TestDispatcher_ListCommand_WithSubscriptions(t *testing.T) {
-	listHandler := NewList(func(chatID int64) (scrapperhttp.ListLinksResponse, error) {
+	// arrange
+	ctx := context.Background()
+
+	listHandler := NewList(func(ctx context.Context, chatID int64) (scrapperhttp.ListLinksResponse, error) {
+		if ctx == nil {
+			t.Errorf("expected non-nil context")
+		}
+
 		if chatID != 1 {
 			t.Errorf("unexpected chatID: got %d, want 1", chatID)
 		}
@@ -35,8 +43,10 @@ func TestDispatcher_ListCommand_WithSubscriptions(t *testing.T) {
 	dispatcher := NewDispatcher([]Handler{listHandler})
 	msg := newCommandMessage(1, "/list")
 
-	got := dispatcher.Dispatch(msg)
+	// act
+	got := dispatcher.Dispatch(ctx, msg)
 
+	// assert
 	want := "Отслеживаемые ссылки:\n" +
 		"1. https://github.com/user/repo [теги: backend, go]\n" +
 		"2. https://stackoverflow.com/questions/123/test [теги: qa]"
@@ -47,15 +57,20 @@ func TestDispatcher_ListCommand_WithSubscriptions(t *testing.T) {
 }
 
 func TestDispatcher_ListCommand_EmptyList(t *testing.T) {
-	listHandler := NewList(func(chatID int64) (scrapperhttp.ListLinksResponse, error) {
+	// arrange
+	ctx := context.Background()
+
+	listHandler := NewList(func(ctx context.Context, chatID int64) (scrapperhttp.ListLinksResponse, error) {
 		return scrapperhttp.ListLinksResponse{}, repository.ErrChatNotFound
 	})
 
 	dispatcher := NewDispatcher([]Handler{listHandler})
 	msg := newCommandMessage(1, "/list")
 
-	got := dispatcher.Dispatch(msg)
+	// act
+	got := dispatcher.Dispatch(ctx, msg)
 
+	// assert
 	want := "Список отслеживаемых ссылок пуст."
 
 	if got != want {
@@ -64,7 +79,10 @@ func TestDispatcher_ListCommand_EmptyList(t *testing.T) {
 }
 
 func TestDispatcher_ListCommand_FilterByTag(t *testing.T) {
-	listHandler := NewList(func(chatID int64) (scrapperhttp.ListLinksResponse, error) {
+	// arrange
+	ctx := context.Background()
+
+	listHandler := NewList(func(ctx context.Context, chatID int64) (scrapperhttp.ListLinksResponse, error) {
 		return scrapperhttp.ListLinksResponse{
 			Links: []scrapperhttp.LinkResponse{
 				{
@@ -85,8 +103,10 @@ func TestDispatcher_ListCommand_FilterByTag(t *testing.T) {
 	dispatcher := NewDispatcher([]Handler{listHandler})
 	msg := newCommandMessage(1, "/list qa")
 
-	got := dispatcher.Dispatch(msg)
+	// act
+	got := dispatcher.Dispatch(ctx, msg)
 
+	// assert
 	want := "Отслеживаемые ссылки:\n" +
 		"1. https://stackoverflow.com/questions/123/test [теги: qa]"
 
@@ -96,15 +116,20 @@ func TestDispatcher_ListCommand_FilterByTag(t *testing.T) {
 }
 
 func TestDispatcher_ListCommand_InternalError(t *testing.T) {
-	listHandler := NewList(func(chatID int64) (scrapperhttp.ListLinksResponse, error) {
+	// arrange
+	ctx := context.Background()
+
+	listHandler := NewList(func(ctx context.Context, chatID int64) (scrapperhttp.ListLinksResponse, error) {
 		return scrapperhttp.ListLinksResponse{}, errors.New("internal error")
 	})
 
 	dispatcher := NewDispatcher([]Handler{listHandler})
 	msg := newCommandMessage(1, "/list")
 
-	got := dispatcher.Dispatch(msg)
+	// act
+	got := dispatcher.Dispatch(ctx, msg)
 
+	// assert
 	want := "Не удалось получить список ссылок."
 
 	if got != want {

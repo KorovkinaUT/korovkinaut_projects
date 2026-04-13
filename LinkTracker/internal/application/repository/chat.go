@@ -1,6 +1,9 @@
 package repository
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 var (
 	ErrChatAlreadyExists = errors.New("chat already exists")
@@ -8,7 +11,7 @@ var (
 )
 
 type ChatRepository interface {
-	Register(chatID int64) error
-	Delete(chatID int64) error
-	Exists(chatID int64) bool
+	Register(ctx context.Context, chatID int64) error
+	Delete(ctx context.Context, chatID int64) error
+	Exists(ctx context.Context, chatID int64) (bool, error)
 }

@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -12,13 +13,13 @@ const unknownCommandMsg = "Неизвестная команда. Восполь
 type Handler interface {
 	Command() string
 	Description() string
-	Handle(msg *tgbotapi.Message) string
+	Handle(ctx context.Context, msg *tgbotapi.Message) string
 }
 
 // Interface for /track
 type dialogHandler interface {
 	States() *StateStorage
-	HandleDialog(msg *tgbotapi.Message, dialog TrackDialog) string
+	HandleDialog(ctx context.Context, msg *tgbotapi.Message, dialog TrackDialog) string
 }
 
 // Commands dispatcher
@@ -46,7 +47,7 @@ func NewDispatcher(h []Handler) *Dispatcher {
 	}
 }
 
-func (d *Dispatcher) Dispatch(msg *tgbotapi.Message) string {
+func (d *Dispatcher) Dispatch(ctx context.Context, msg *tgbotapi.Message) string {
 	if msg == nil || msg.Chat == nil {
 		return "Не удалось определить чат."
 	}
@@ -63,11 +64,11 @@ func (d *Dispatcher) Dispatch(msg *tgbotapi.Message) string {
 		if dialog.State != StateIdle {
 			// Continue dialog
 			if !msg.IsCommand() {
-				return trackHandler.HandleDialog(msg, dialog)
+				return trackHandler.HandleDialog(ctx, msg, dialog)
 			}
 
 			if msg.Command() == "cancel" {
-				return trackHandler.HandleDialog(msg, dialog)
+				return trackHandler.HandleDialog(ctx, msg, dialog)
 			}
 
 			// If send other command, cancel tracking and handle command
@@ -90,7 +91,7 @@ func (d *Dispatcher) Dispatch(msg *tgbotapi.Message) string {
 		return unknownCommandMsg
 	}
 
-	return h.Handle(msg)
+	return h.Handle(ctx, msg)
 }
 
 func (d *Dispatcher) Commands() []Handler {
@@ -99,8 +100,4 @@ func (d *Dispatcher) Commands() []Handler {
 		cmds = append(cmds, h)
 	}
 	return cmds
-}
-
-func (d *Dispatcher) AddHandler(h Handler) {
-
 }

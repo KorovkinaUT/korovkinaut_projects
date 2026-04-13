@@ -1,8 +1,9 @@
 package dispatcher
 
 import (
-	"slices"
+	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -12,10 +13,10 @@ import (
 )
 
 type List struct {
-	listLinks func(chatID int64) (scrapperhttp.ListLinksResponse, error)
+	listLinks func(ctx context.Context, chatID int64) (scrapperhttp.ListLinksResponse, error)
 }
 
-func NewList(listLinks func(chatID int64) (scrapperhttp.ListLinksResponse, error)) List {
+func NewList(listLinks func(ctx context.Context, chatID int64) (scrapperhttp.ListLinksResponse, error)) List {
 	return List{
 		listLinks: listLinks,
 	}
@@ -26,12 +27,12 @@ func (h List) Description() string {
 	return "вывести список всех отслеживаемых ссылок"
 }
 
-func (h List) Handle(msg *tgbotapi.Message) string {
+func (h List) Handle(ctx context.Context, msg *tgbotapi.Message) string {
 	if msg == nil || msg.Chat == nil {
 		return "Не удалось определить чат."
 	}
 
-	resp, err := h.listLinks(msg.Chat.ID)
+	resp, err := h.listLinks(ctx, msg.Chat.ID)
 	if err != nil {
 		if errors.Is(err, repository.ErrChatNotFound) {
 			return "Список отслеживаемых ссылок пуст."

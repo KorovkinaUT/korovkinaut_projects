@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"sync"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/repository"
@@ -19,7 +20,7 @@ func NewChatRepository() *ChatRepository {
 	}
 }
 
-func (r *ChatRepository) Register(chatID int64) error {
+func (r *ChatRepository) Register(ctx context.Context, chatID int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -31,7 +32,7 @@ func (r *ChatRepository) Register(chatID int64) error {
 	return nil
 }
 
-func (r *ChatRepository) Delete(chatID int64) error {
+func (r *ChatRepository) Delete(ctx context.Context, chatID int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -43,12 +44,12 @@ func (r *ChatRepository) Delete(chatID int64) error {
 	return nil
 }
 
-func (r *ChatRepository) Exists(chatID int64) bool {
+func (r *ChatRepository) Exists(ctx context.Context, chatID int64) (bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	_, exists := r.chats[chatID]
-	return exists
+	return exists, nil
 }
 
 // CompileTime check of methods correctness

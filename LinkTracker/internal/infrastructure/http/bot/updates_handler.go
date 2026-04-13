@@ -2,7 +2,6 @@ package bothttp
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 )
@@ -53,11 +52,9 @@ func (h *UpdatesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	text := formatUpdateMessage(req)
-
 	// Sends notification to chats
 	for _, chatID := range req.TgChatIDs {
-		if err := h.sendMessage(chatID, text); err != nil {
+		if err := h.sendMessage(chatID, req.Description); err != nil {
 			writeError(
 				w,
 				http.StatusInternalServerError,
@@ -70,14 +67,6 @@ func (h *UpdatesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-}
-
-func formatUpdateMessage(req LinkUpdate) string {
-	return fmt.Sprintf(
-		"По ссылке появилось обновление\nСсылка: %s\nОписание: %s",
-		req.URL,
-		req.Description,
-	)
 }
 
 func hasRequiredFields(req LinkUpdate) bool {

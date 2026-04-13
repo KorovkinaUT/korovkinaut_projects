@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -12,14 +13,14 @@ import (
 )
 
 type Track struct {
-	states  *StateStorage // dialogs states
+	states  *StateStorage          // dialogs states
 	parser  *schedulerlink.Service // checks link correctness
-	addLink func(chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error)
+	addLink func(ctx context.Context, chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error)
 }
 
 func NewTrack(
 	parser *schedulerlink.Service,
-	addLink func(chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error),
+	addLink func(ctx context.Context, chatID int64, request scrapperhttp.AddLinkRequest) (scrapperhttp.LinkResponse, error),
 ) Track {
 	return Track{
 		states:  NewStateStorage(),
@@ -35,8 +36,8 @@ func (h Track) States() *StateStorage {
 	return h.states
 }
 
-// Hanlde /track command
-func (h Track) Handle(msg *tgbotapi.Message) string {
+// Handle /track command
+func (h Track) Handle(ctx context.Context, msg *tgbotapi.Message) string {
 	if msg == nil || msg.Chat == nil {
 		return "Не удалось определить чат."
 	}
@@ -49,7 +50,7 @@ func (h Track) Handle(msg *tgbotapi.Message) string {
 }
 
 // Handle other massages after /track
-func (h Track) HandleDialog(msg *tgbotapi.Message, dialog TrackDialog) string {
+func (h Track) HandleDialog(ctx context.Context, msg *tgbotapi.Message, dialog TrackDialog) string {
 	chatID := msg.Chat.ID
 
 	switch dialog.State {
@@ -73,11 +74,11 @@ func (h Track) HandleDialog(msg *tgbotapi.Message, dialog TrackDialog) string {
 	case StateWaitingTrackTags:
 		// /cancel
 		if msg.IsCommand() {
-			return h.finishDialog(chatID, dialog.Link, []string{})
+			return h.finishDialog(ctx, chatID, dialog.Link, []string{})
 		}
 
 		tags := parseTrackTags(msg.Text)
-		return h.finishDialog(chatID, dialog.Link, tags)
+		return h.finishDialog(ctx, chatID, dialog.Link, tags)
 
 	default:
 		h.states.Reset(chatID)
@@ -85,10 +86,10 @@ func (h Track) HandleDialog(msg *tgbotapi.Message, dialog TrackDialog) string {
 	}
 }
 
-func (h Track) finishDialog(chatID int64, link string, tags []string) string {
+func (h Track) finishDialog(ctx context.Context, chatID int64, link string, tags []string) string {
 	h.states.Reset(chatID)
 
-	_, err := h.addLink(chatID, scrapperhttp.AddLinkRequest{
+	_, err := h.addLink(ctx, chatID, scrapperhttp.AddLinkRequest{
 		Link: link,
 		Tags: tags,
 	})

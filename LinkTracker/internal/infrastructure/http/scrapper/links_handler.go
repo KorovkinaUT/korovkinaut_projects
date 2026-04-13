@@ -1,7 +1,9 @@
 package scrapperhttp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -21,6 +23,8 @@ func NewLinksHandler(subscriptions *service.SubscriptionService) *LinksHandler {
 }
 
 func (h *LinksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	chatID, ok := parseChatIDHeader(r.Header)
 	if !ok || chatID <= 0 {
 		writeAPIError(w, http.StatusBadRequest, "invalid request parameters", "invalid Tg-Chat-Id")
@@ -29,21 +33,21 @@ func (h *LinksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		h.handleListLinks(w, chatID)
+		h.handleListLinks(ctx, w, chatID)
 	case http.MethodPost:
-		h.handleAddLink(w, r, chatID)
+		h.handleAddLink(ctx, w, r, chatID)
 	case http.MethodDelete:
-		h.handleRemoveLink(w, r, chatID)
+		h.handleRemoveLink(ctx, w, r, chatID)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *LinksHandler) handleListLinks(w http.ResponseWriter, chatID int64) {
-	links, err := h.subscriptions.ListLinks(chatID)
+func (h *LinksHandler) handleListLinks(ctx context.Context, w http.ResponseWriter, chatID int64) {
+	links, err := h.subscriptions.ListLinksAll(ctx, chatID)
 	if err != nil {
-		switch err {
-		case repository.ErrChatNotFound:
+		switch {
+		case errors.Is(err, repository.ErrChatNotFound):
 			writeAPIError(w, http.StatusNotFound, "chat not found", err.Error())
 		default:
 			writeAPIError(w, http.StatusBadRequest, "failed to list links", err.Error())
@@ -68,7 +72,7 @@ func (h *LinksHandler) handleListLinks(w http.ResponseWriter, chatID int64) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *LinksHandler) handleAddLink(w http.ResponseWriter, r *http.Request, chatID int64) {
+func (h *LinksHandler) handleAddLink(ctx context.Context, w http.ResponseWriter, r *http.Request, chatID int64) {
 	defer r.Body.Close()
 
 	decoder := json.NewDecoder(r.Body)
@@ -85,12 +89,12 @@ func (h *LinksHandler) handleAddLink(w http.ResponseWriter, r *http.Request, cha
 		return
 	}
 
-	link, err := h.subscriptions.AddLink(chatID, req.Link, req.Tags)
+	link, err := h.subscriptions.AddLink(ctx, chatID, req.Link, req.Tags)
 	if err != nil {
-		switch err {
-		case repository.ErrChatNotFound:
+		switch {
+		case errors.Is(err, repository.ErrChatNotFound):
 			writeAPIError(w, http.StatusNotFound, "chat not found", err.Error())
-		case repository.ErrLinkAlreadyTracked:
+		case errors.Is(err, repository.ErrLinkAlreadyTracked):
 			writeAPIError(w, http.StatusConflict, "link already tracked", err.Error())
 		default:
 			writeAPIError(w, http.StatusBadRequest, "failed to add link", err.Error())
@@ -106,7 +110,7 @@ func (h *LinksHandler) handleAddLink(w http.ResponseWriter, r *http.Request, cha
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *LinksHandler) handleRemoveLink(w http.ResponseWriter, r *http.Request, chatID int64) {
+func (h *LinksHandler) handleRemoveLink(ctx context.Context, w http.ResponseWriter, r *http.Request, chatID int64) {
 	defer r.Body.Close()
 
 	decoder := json.NewDecoder(r.Body)
@@ -123,10 +127,12 @@ func (h *LinksHandler) handleRemoveLink(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	link, err := h.subscriptions.RemoveLink(chatID, req.Link)
+	link, err := h.subscriptions.RemoveLink(ctx, chatID, req.Link)
 	if err != nil {
-		switch err {
-		case repository.ErrChatNotFound, repository.ErrLinkNotFound:
+		switch {
+		case errors.Is(err, repository.ErrChatNotFound):
+			writeAPIError(w, http.StatusNotFound, "chat or link not found", err.Error())
+		case errors.Is(err, repository.ErrLinkNotFound):
 			writeAPIError(w, http.StatusNotFound, "chat or link not found", err.Error())
 		default:
 			writeAPIError(w, http.StatusBadRequest, "failed to remove link", err.Error())

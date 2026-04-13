@@ -3,10 +3,9 @@ package updates
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"time"
 
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/update"
 	stackoverflowhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/stackoverflow"
 )
 
@@ -24,16 +23,24 @@ func (c *StackOverflowClient) Type() schedulerlink.LinkType {
 	return schedulerlink.TypeStackOverflow
 }
 
-func (c *StackOverflowClient) GetUpdatedAt(ctx context.Context, link schedulerlink.SchedulerLink) (time.Time, error) {
-	stackLink, ok := link.(schedulerlink.StackOverflowLink)
+func (c *StackOverflowClient) GetEvents(
+	ctx context.Context,
+	link schedulerlink.SchedulerLink,
+) ([]update.Event, error) {
+	stackOverflowLink, ok := link.(schedulerlink.StackOverflowLink)
 	if !ok {
-		return time.Time{}, fmt.Errorf("expected stackoverflow link, got %T", link)
+		return nil, fmt.Errorf("expected stackoverflow link, got %T", link)
 	}
 
-	updatedAt, err := c.client.GetQuestionUpdatedAt(ctx, strconv.FormatInt(stackLink.QuestionID, 10))
+	events, err := c.client.GetQuestionEvents(ctx, stackOverflowLink.QuestionID)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("get stackoverflow updated at: %w", err)
+		return nil, fmt.Errorf("get stackoverflow events: %w", err)
 	}
 
-	return updatedAt, nil
+	result := make([]update.Event, 0, len(events))
+	for _, event := range events {
+		result = append(result, event)
+	}
+
+	return result, nil
 }

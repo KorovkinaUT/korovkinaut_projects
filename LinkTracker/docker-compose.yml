@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: link-tracker-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 2
+
+  migrator:
+    image: migrate/migrate:4
+    container_name: migrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations
+    command:
+      [
+        "-path", "/migrations",
+        "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}",
+        "up"
+      ]
+
+  scrapper:
+    build:
+      context: .
+      dockerfile: ./deploy/scrapper.Dockerfile
+    container_name: link-tracker-scrapper
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      SCRAPPER_HOST: 0.0.0.0
+      BOT_HOST: bot
+    ports:
+      - "${SCRAPPER_PORT}:${SCRAPPER_PORT}"
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: ./deploy/bot.Dockerfile
+    container_name: link-tracker-bot
+    depends_on:
+      - scrapper
+    env_file:
+      - .env
+    environment:
+      BOT_HOST: 0.0.0.0
+      SCRAPPER_HOST: scrapper
+    ports:
+      - "${BOT_PORT}:${BOT_PORT}"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

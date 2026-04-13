@@ -28,7 +28,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	tg, err := telegram.NewClient(cfg.AppTelegramToken, cfg.PollTimeoutSeconds)
+	tgClient, err := telegram.NewClient(cfg.AppTelegramToken, cfg.PollTimeoutSeconds)
 	if err != nil {
 		logger.Error("failed to init telegram client", "error", err)
 		os.Exit(1)
@@ -48,13 +48,13 @@ func main() {
 		dispatcher.NewUntrack(parser, scrapperClient.RemoveLink),
 	})
 
-	registerBotCommands(tg, d.Commands(), logger)
+	registerBotCommands(tgClient, d.Commands(), logger)
 
 	// For communication with scrapper
-	httpServer := bothttp.NewServer(cfg.BotAddress(), tg.SendMessage)
+	httpServer := bothttp.NewServer(cfg.BotAddress(), tgClient.SendMessage)
 	httpServer.Start(logger, stop)
 
-	updates := tg.UpdatesChan(0)
+	updates := tgClient.UpdatesChan(0)
 
 	logger.Info("bot started")
 
@@ -64,7 +64,10 @@ func main() {
 		case <-ctx.Done():
 			logger.Info("shutting down bot")
 
-			if err := httpServer.Shutdown(context.Background()); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancel()
+
+			if err := httpServer.Shutdown(shutdownCtx); err != nil {
 				logger.Error("failed to shutdown bot http server", "error", err)
 			}
 
@@ -85,8 +88,8 @@ func main() {
 				"text", u.Message.Text,
 			)
 
-			response := d.Dispatch(u.Message)
-			if err := tg.SendMessage(chatID, response); err != nil {
+			response := d.Dispatch(ctx, u.Message)
+			if err := tgClient.SendMessage(chatID, response); err != nil {
 				logger.Error("send message failed",
 					"error", err,
 					"chat_id", chatID,

@@ -2,6 +2,7 @@ package scrapperhttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,10 +24,10 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) RegisterChat(chatID int64) error {
+func (c *Client) RegisterChat(ctx context.Context, chatID int64) error {
 	endpoint := fmt.Sprintf("%s/tg-chat/%d", c.baseURL, chatID)
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("build register chat request: %w", err)
 	}
@@ -47,10 +48,10 @@ func (c *Client) RegisterChat(chatID int64) error {
 	}
 }
 
-func (c *Client) DeleteChat(chatID int64) error {
+func (c *Client) DeleteChat(ctx context.Context, chatID int64) error {
 	endpoint := fmt.Sprintf("%s/tg-chat/%d", c.baseURL, chatID)
 
-	req, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("build delete chat request: %w", err)
 	}
@@ -71,10 +72,10 @@ func (c *Client) DeleteChat(chatID int64) error {
 	}
 }
 
-func (c *Client) ListLinks(chatID int64) (ListLinksResponse, error) {
+func (c *Client) ListLinks(ctx context.Context, chatID int64) (ListLinksResponse, error) {
 	endpoint := fmt.Sprintf("%s/links", c.baseURL)
 
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return ListLinksResponse{}, fmt.Errorf("build list links request: %w", err)
 	}
@@ -86,10 +87,6 @@ func (c *Client) ListLinks(chatID int64) (ListLinksResponse, error) {
 		return ListLinksResponse{}, fmt.Errorf("send list links request: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-
-	}
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -105,7 +102,7 @@ func (c *Client) ListLinks(chatID int64) (ListLinksResponse, error) {
 	}
 }
 
-func (c *Client) AddLink(chatID int64, request AddLinkRequest) (LinkResponse, error) {
+func (c *Client) AddLink(ctx context.Context, chatID int64, request AddLinkRequest) (LinkResponse, error) {
 	endpoint := fmt.Sprintf("%s/links", c.baseURL)
 
 	body, err := json.Marshal(request)
@@ -113,7 +110,7 @@ func (c *Client) AddLink(chatID int64, request AddLinkRequest) (LinkResponse, er
 		return LinkResponse{}, fmt.Errorf("marshal add link request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return LinkResponse{}, fmt.Errorf("build add link request: %w", err)
 	}
@@ -143,7 +140,7 @@ func (c *Client) AddLink(chatID int64, request AddLinkRequest) (LinkResponse, er
 	}
 }
 
-func (c *Client) RemoveLink(chatID int64, request RemoveLinkRequest) (LinkResponse, error) {
+func (c *Client) RemoveLink(ctx context.Context, chatID int64, request RemoveLinkRequest) (LinkResponse, error) {
 	endpoint := fmt.Sprintf("%s/links", c.baseURL)
 
 	body, err := json.Marshal(request)
@@ -151,7 +148,7 @@ func (c *Client) RemoveLink(chatID int64, request RemoveLinkRequest) (LinkRespon
 		return LinkResponse{}, fmt.Errorf("marshal remove link request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodDelete, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return LinkResponse{}, fmt.Errorf("build remove link request: %w", err)
 	}

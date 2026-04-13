@@ -1,7 +1,7 @@
 package memory
 
 import (
-	"maps"
+	"context"
 	"slices"
 	"sync"
 	"time"
@@ -15,7 +15,7 @@ import (
 type SubscriptionRepository struct {
 	mu sync.RWMutex
 
-	nextLinkID int64 // to get next link id for responce api
+	nextLinkID int64 // to get next link id for response api
 
 	linksByChat      map[int64]map[string]domain.RepositoryLink
 	chatsByLink      map[string]map[int64]struct{} // for sending update
@@ -31,7 +31,7 @@ func NewSubscriptionRepository() *SubscriptionRepository {
 	}
 }
 
-func (r *SubscriptionRepository) AddLink(chatID int64, url string, tags []string) error {
+func (r *SubscriptionRepository) AddLink(ctx context.Context, chatID int64, url string, tags []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -61,7 +61,7 @@ func (r *SubscriptionRepository) AddLink(chatID int64, url string, tags []string
 	return nil
 }
 
-func (r *SubscriptionRepository) RemoveLink(chatID int64, url string) error {
+func (r *SubscriptionRepository) RemoveLink(ctx context.Context, chatID int64, url string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -91,7 +91,7 @@ func (r *SubscriptionRepository) RemoveLink(chatID int64, url string) error {
 	return nil
 }
 
-func (r *SubscriptionRepository) GetLink(chatID int64, url string) (domain.RepositoryLink, error) {
+func (r *SubscriptionRepository) GetLink(ctx context.Context, chatID int64, url string) (domain.RepositoryLink, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -108,7 +108,7 @@ func (r *SubscriptionRepository) GetLink(chatID int64, url string) (domain.Repos
 	return cloneLink(link), nil
 }
 
-func (r *SubscriptionRepository) ListLinks(chatID int64) ([]domain.RepositoryLink, error) {
+func (r *SubscriptionRepository) ListLinks(ctx context.Context, chatID int64, limit int64, offset int64) ([]domain.RepositoryLink, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -117,15 +117,25 @@ func (r *SubscriptionRepository) ListLinks(chatID int64) ([]domain.RepositoryLin
 		return []domain.RepositoryLink{}, nil
 	}
 
-	result := make([]domain.RepositoryLink, 0, len(chatLinks))
+	links := make([]domain.RepositoryLink, 0, len(chatLinks))
 	for _, link := range chatLinks {
-		result = append(result, cloneLink(link))
+		links = append(links, cloneLink(link))
 	}
 
-	return result, nil
+	slices.SortFunc(links, func(a, b domain.RepositoryLink) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+
+	return paginate(links, limit, offset), nil
 }
 
-func (r *SubscriptionRepository) ListChatIDs(url string) ([]int64, error) {
+func (r *SubscriptionRepository) ListChatIDs(ctx context.Context, url string, limit int64, offset int64) ([]int64, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -139,17 +149,32 @@ func (r *SubscriptionRepository) ListChatIDs(url string) ([]int64, error) {
 		result = append(result, chatID)
 	}
 
-	return result, nil
+	slices.Sort(result)
+
+	return paginate(result, limit, offset), nil
 }
 
-func (r *SubscriptionRepository) ListTrackedURLs() (map[string]time.Time, error) {
+func (r *SubscriptionRepository) ListTrackedURLs(ctx context.Context, limit int64, offset int64) (map[string]time.Time, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return maps.Clone(r.lastUpdatedByURL), nil
+	urls := make([]string, 0, len(r.lastUpdatedByURL))
+	for url := range r.lastUpdatedByURL {
+		urls = append(urls, url)
+	}
+	slices.Sort(urls)
+
+	urls = paginate(urls, limit, offset)
+
+	result := make(map[string]time.Time, len(urls))
+	for _, url := range urls {
+		result[url] = r.lastUpdatedByURL[url]
+	}
+
+	return result, nil
 }
 
-func (r *SubscriptionRepository) UpdateLastUpdated(url string, updatedAt time.Time) error {
+func (r *SubscriptionRepository) UpdateLastUpdated(ctx context.Context, url string, updatedAt time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -161,6 +186,80 @@ func (r *SubscriptionRepository) UpdateLastUpdated(url string, updatedAt time.Ti
 	return nil
 }
 
+func (r *SubscriptionRepository) AddTag(ctx context.Context, chatID int64, url string, tag string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	chatLinks, exists := r.linksByChat[chatID]
+	if !exists {
+		return repository.ErrLinkNotFound
+	}
+
+	link, exists := chatLinks[url]
+	if !exists {
+		return repository.ErrLinkNotFound
+	}
+
+	if slices.Contains(link.Tags, tag) {
+		return repository.ErrTagAlreadyExists
+	}
+
+	link.Tags = append(link.Tags, tag)
+	chatLinks[url] = link
+
+	return nil
+}
+
+func (r *SubscriptionRepository) RemoveTag(ctx context.Context, chatID int64, url string, tag string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	chatLinks, exists := r.linksByChat[chatID]
+	if !exists {
+		return repository.ErrLinkNotFound
+	}
+
+	link, exists := chatLinks[url]
+	if !exists {
+		return repository.ErrLinkNotFound
+	}
+
+	tagIndex := -1
+	for i, existingTag := range link.Tags {
+		if existingTag == tag {
+			tagIndex = i
+			break
+		}
+	}
+	if tagIndex == -1 {
+		return repository.ErrTagNotFound
+	}
+
+	link.Tags = append(link.Tags[:tagIndex], link.Tags[tagIndex+1:]...)
+	chatLinks[url] = link
+
+	return nil
+}
+
+func (r *SubscriptionRepository) ListTags(ctx context.Context, chatID int64, url string, limit int64, offset int64) ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	chatLinks, exists := r.linksByChat[chatID]
+	if !exists {
+		return nil, repository.ErrLinkNotFound
+	}
+
+	link, exists := chatLinks[url]
+	if !exists {
+		return nil, repository.ErrLinkNotFound
+	}
+
+	tags := slices.Clone(link.Tags)
+
+	return paginate(tags, limit, offset), nil
+}
+
 // From outside Links can't be changed
 func cloneLink(link domain.RepositoryLink) domain.RepositoryLink {
 	return domain.RepositoryLink{
@@ -168,6 +267,19 @@ func cloneLink(link domain.RepositoryLink) domain.RepositoryLink {
 		URL:  link.URL,
 		Tags: slices.Clone(link.Tags),
 	}
+}
+
+func paginate[T any](items []T, limit int64, offset int64) []T {
+	if offset >= int64(len(items)) {
+		return []T{}
+	}
+
+	end := offset + limit
+	if end > int64(len(items)) {
+		end = int64(len(items))
+	}
+
+	return slices.Clone(items[offset:end])
 }
 
 // CompileTime check of methods correctness
