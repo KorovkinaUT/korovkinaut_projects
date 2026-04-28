@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -11,6 +12,8 @@ type ScrapperConfig struct {
 	SchedulerInterval time.Duration `envconfig:"SCHEDULER_INTERVAL" default:"1m"`
 	BatchSize         int64         `envconfig:"BATCH_SIZE" default:"100"`
 	WorkersCount      int           `envconfig:"WORKERS_COUNT" default:"4"`
+
+	UpdatesTransport string `envconfig:"UPDATES_TRANSPORT" default:"KAFKA"`
 
 	BotHost      string `envconfig:"BOT_HOST" default:"localhost"`
 	BotPort      int    `envconfig:"BOT_PORT" default:"8080"`
@@ -36,6 +39,13 @@ func LoadScrapperConfig() (*ScrapperConfig, error) {
 	var cfg ScrapperConfig
 	if err := envconfig.Process("", &cfg); err != nil {
 		return nil, err
+	}
+
+	if strings.ToUpper(cfg.UpdatesTransport) != "HTTP" && strings.ToUpper(cfg.UpdatesTransport) != "KAFKA" {
+		return nil, fmt.Errorf(
+			"unsupported UPDATES_TRANSPORT %q: expected one of [HTTP, KAFKA]",
+			cfg.UpdatesTransport,
+		)
 	}
 
 	if cfg.BatchSize <= 0 {

@@ -49,3 +49,21 @@ run:
 	SCRAPPER_PID=$$!; \
 	trap "kill $$BOT_PID $$SCRAPPER_PID" INT TERM; \
 	wait
+
+include .env
+
+UPDATES_TRANSPORT ?= KAFKA
+COMPOSE_FILES=-f docker-compose.yml
+
+ifeq ($(UPDATES_TRANSPORT),KAFKA)
+	COMPOSE_FILES=-f docker-compose.yml -f docker-compose.kafka.yml
+endif
+
+# Starts docker containers depending on UPDATES_TRANSPORT type
+.PHONY: up down
+
+up:
+	docker compose $(COMPOSE_FILES) up --build
+
+down:
+	docker compose $(COMPOSE_FILES) down

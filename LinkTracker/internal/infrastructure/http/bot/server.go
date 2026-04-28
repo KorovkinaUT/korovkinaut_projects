@@ -3,6 +3,7 @@ package bothttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -25,16 +26,14 @@ func NewServer(addr string, sendMessage func(chatID int64, text string) error) *
 	}
 }
 
+func (s *Server) Start(logger *slog.Logger) error {
+	logger.Info("bot http server started", "addr", s.httpServer.Addr)
 
-func (s *Server) Start(logger *slog.Logger, stop func()) {
-	go func() {
-		logger.Info("bot http server started", "addr", s.httpServer.Addr)
+	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("listen and serve bot http server: %w", err)
+	}
 
-		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("bot http server failed", "error", err)
-			stop()
-		}
-	}()
+	return nil
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

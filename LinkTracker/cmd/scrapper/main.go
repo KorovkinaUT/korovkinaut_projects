@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/service"
@@ -13,7 +14,6 @@ import (
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/database"
-	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 	githubhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/github"
 	scrapperhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/scrapper"
 	stackoverflowhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/stackoverflow"
@@ -34,6 +34,15 @@ func main() {
 	if err != nil {
 		logger.Error("failed to load database config", "error", err)
 		os.Exit(1)
+	}
+
+	var kafkaCfg *config.KafkaConfig
+	if strings.ToUpper(cfg.UpdatesTransport) == "KAFKA" {
+		kafkaCfg, err = config.LoadKafkaConfig()
+		if err != nil {
+			logger.Error("failed to load kafka config", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -70,8 +79,11 @@ func main() {
 	httpClient := &http.Client{Timeout: cfg.HttpTimeout}
 	githubClient := githubhttp.NewClient(cfg.GithubBaseURL, httpClient)
 	stackClient := stackoverflowhttp.NewClient(cfg.StackOverflowBaseURL, httpClient)
-	botClient := bothttp.NewClient(cfg.BotBaseURL(), httpClient)
-	httpSender := sender.NewHTTPSender(botClient)
+	messageSender, err := sender.NewMessageSender(cfg.UpdatesTransport, kafkaCfg, cfg.BotBaseURL(), httpClient)
+	if err != nil {
+		logger.Error("failed to initialize message sender", "error", err)
+		os.Exit(1)
+	}
 
 	// Parser for Checker of updates
 	parser := schedulerlink.NewService()
@@ -90,7 +102,7 @@ func main() {
 		cfg.WorkersCount,
 		subscriptionService,
 		parser,
-		httpSender,
+		messageSender,
 		[]updates.LinkClient{
 			githubLinkClient,
 			stackOverflowLinkClient,
@@ -128,6 +140,13 @@ func main() {
 
 	if err := scrapperScheduler.Stop(); err != nil {
 		logger.Error("failed to stop scheduler", "error", err)
+	}
+
+	// If messageSender uses HTTP, there is no need to close it
+	if closer, ok := messageSender.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			logger.Error("failed to close message sender", "error", err)
+		}
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)

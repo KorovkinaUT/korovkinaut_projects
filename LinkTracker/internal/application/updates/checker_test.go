@@ -18,16 +18,20 @@ import (
 )
 
 type fakeLinkClient struct {
-	linkType  schedulerlink.LinkType
-	getEvents func(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error)
+	linkType     schedulerlink.LinkType
+	getNewEvents func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error)
 }
 
 func (c fakeLinkClient) Type() schedulerlink.LinkType {
 	return c.linkType
 }
 
-func (c fakeLinkClient) GetEvents(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error) {
-	return c.getEvents(ctx, link)
+func (c fakeLinkClient) GetNewEvents(
+	ctx context.Context,
+	link schedulerlink.SchedulerLink,
+	since time.Time,
+) ([]update.Event, error) {
+	return c.getNewEvents(ctx, link, since)
 }
 
 type fakeFormatter struct {
@@ -107,19 +111,21 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, time.Unix(100, 0))
+	trackedLastUpdated := time.Unix(100, 0).UTC()
+	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, trackedLastUpdated)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = subscriptionService.UpdateLastUpdated(ctx, otherURL, time.Unix(200, 0))
+	otherLastUpdated := time.Unix(200, 0).UTC()
+	err = subscriptionService.UpdateLastUpdated(ctx, otherURL, otherLastUpdated)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	githubClient := fakeLinkClient{
 		linkType: schedulerlink.TypeGitHub,
-		getEvents: func(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error) {
+		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
 			githubLink, ok := link.(schedulerlink.GitHubLink)
 			if !ok {
 				return nil, errors.New("unexpected link type")
@@ -127,6 +133,10 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 
 			switch {
 			case githubLink.Owner == "user" && githubLink.Repo == "repo":
+				if !since.Equal(trackedLastUpdated) {
+					return nil, errors.New("unexpected since for tracked url")
+				}
+
 				return []update.Event{
 					update.GitHubEvent{
 						Type:         update.GitHubEventIssue,
@@ -137,15 +147,11 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 					},
 				}, nil
 			case githubLink.Owner == "other" && githubLink.Repo == "repo":
-				return []update.Event{
-					update.GitHubEvent{
-						Type:         update.GitHubEventIssue,
-						Title:        "Old issue",
-						Username:     "bob",
-						CreationTime: time.Unix(200, 0),
-						Preview:      "Old preview",
-					},
-				}, nil
+				if !since.Equal(otherLastUpdated) {
+					return nil, errors.New("unexpected since for other url")
+				}
+
+				return nil, nil
 			default:
 				return nil, errors.New("unexpected github link")
 			}
@@ -216,7 +222,7 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 	}
 
 	gotOtherUpdatedAt := trackedURLs[otherURL]
-	wantOtherUpdatedAt := time.Unix(200, 0)
+	wantOtherUpdatedAt := otherLastUpdated
 	if !gotOtherUpdatedAt.Equal(wantOtherUpdatedAt) {
 		t.Errorf("unexpected other url updated_at: got %v, want %v", gotOtherUpdatedAt, wantOtherUpdatedAt)
 	}
@@ -243,14 +249,19 @@ func TestChecker_Check_GitHubNon2xxDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, time.Unix(100, 0))
+	lastUpdated := time.Unix(100, 0).UTC()
+	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, lastUpdated)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	githubClient := fakeLinkClient{
 		linkType: schedulerlink.TypeGitHub,
-		getEvents: func(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error) {
+		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
+			if !since.Equal(lastUpdated) {
+				return nil, errors.New("unexpected since")
+			}
+
 			return nil, errors.New("github returned unexpected status: 500 Internal Server Error")
 		},
 	}
@@ -304,14 +315,19 @@ func TestChecker_Check_GitHubInvalidBodyDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, time.Unix(100, 0))
+	lastUpdated := time.Unix(100, 0).UTC()
+	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, lastUpdated)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	githubClient := fakeLinkClient{
 		linkType: schedulerlink.TypeGitHub,
-		getEvents: func(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error) {
+		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
+			if !since.Equal(lastUpdated) {
+				return nil, errors.New("unexpected since")
+			}
+
 			return nil, errors.New("decode github response: json: cannot unmarshal number into Go struct field RepositoryResponse.updated_at of type time.Time")
 		},
 	}
@@ -365,14 +381,19 @@ func TestChecker_Check_StackOverflowNon2xxDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, time.Unix(100, 0))
+	lastUpdated := time.Unix(100, 0).UTC()
+	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, lastUpdated)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	stackClient := fakeLinkClient{
 		linkType: schedulerlink.TypeStackOverflow,
-		getEvents: func(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error) {
+		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
+			if !since.Equal(lastUpdated) {
+				return nil, errors.New("unexpected since")
+			}
+
 			return nil, errors.New("stackoverflow returned unexpected status: 502 Bad Gateway")
 		},
 	}
@@ -426,14 +447,19 @@ func TestChecker_Check_StackOverflowInvalidBodyDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, time.Unix(100, 0))
+	lastUpdated := time.Unix(100, 0).UTC()
+	err = subscriptionService.UpdateLastUpdated(ctx, trackedURL, lastUpdated)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	stackClient := fakeLinkClient{
 		linkType: schedulerlink.TypeStackOverflow,
-		getEvents: func(ctx context.Context, link schedulerlink.SchedulerLink) ([]update.Event, error) {
+		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
+			if !since.Equal(lastUpdated) {
+				return nil, errors.New("unexpected since")
+			}
+
 			return nil, errors.New("decode stackoverflow response: json: cannot unmarshal string into Go struct field QuestionResponse.items of type []stackoverflow.Question")
 		},
 	}

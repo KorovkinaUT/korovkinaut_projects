@@ -4,15 +4,15 @@ services:
     container_name: link-tracker-database
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-link_tracker}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-link_tracker}"]
       interval: 5s
       timeout: 3s
       retries: 2
@@ -28,7 +28,7 @@ services:
     command:
       [
         "-path", "/migrations",
-        "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}",
+        "-database", "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-link_tracker}?sslmode=${POSTGRES_SSLMODE:-disable}",
         "up"
       ]
 
@@ -48,7 +48,7 @@ services:
       SCRAPPER_HOST: 0.0.0.0
       BOT_HOST: bot
     ports:
-      - "${SCRAPPER_PORT}:${SCRAPPER_PORT}"
+      - "${SCRAPPER_PORT:-8081}:${SCRAPPER_PORT:-8081}"
     restart: unless-stopped
 
   bot:
@@ -57,14 +57,15 @@ services:
       dockerfile: ./deploy/bot.Dockerfile
     container_name: link-tracker-bot
     depends_on:
-      - scrapper
+      scrapper:
+        condition: service_started
     env_file:
       - .env
     environment:
       BOT_HOST: 0.0.0.0
       SCRAPPER_HOST: scrapper
     ports:
-      - "${BOT_PORT}:${BOT_PORT}"
+      - "${BOT_PORT:-8080}:${BOT_PORT:-8080}"
     restart: unless-stopped
 
 volumes:

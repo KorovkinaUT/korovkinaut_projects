@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,51 +44,77 @@ func (c *Client) GetRepositoryEvents(
 	ctx context.Context,
 	owner string,
 	repo string,
+	since time.Time,
 ) ([]update.GitHubEvent, error) {
-	endpoint := fmt.Sprintf(
-		"%s/repos/%s/%s/issues?state=all&sort=created&direction=desc",
-		c.baseURL,
-		owner,
-		repo,
-	)
+	params := url.Values{}
+	params.Set("state", "all")
+	params.Set("sort", "created")
+	params.Set("direction", "desc")
+	params.Set("since", since.Format(time.RFC3339))
+	params.Set("per_page", "100")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build github request: %w", err)
-	}
+	events := make([]update.GitHubEvent, 0)
+	page := 1
 
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "link-tracker")
+	for {
+		params.Set("page", strconv.Itoa(page))
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send github request: %w", err)
-	}
-	defer resp.Body.Close()
+		endpoint := fmt.Sprintf(
+			"%s/repos/%s/%s/issues?%s",
+			c.baseURL,
+			owner,
+			repo,
+			params.Encode(),
+		)
 
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("github returned unexpected status: %s", resp.Status)
-	}
-
-	var issues []IssueResponse
-	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
-		return nil, fmt.Errorf("decode github response: %w", err)
-	}
-
-	events := make([]update.GitHubEvent, 0, len(issues))
-	for _, issue := range issues {
-		eventType := update.GitHubEventIssue
-		if issue.PullRequest != nil {
-			eventType = update.GitHubEventPullRequest
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build github request: %w", err)
 		}
 
-		events = append(events, update.GitHubEvent{
-			Type:         eventType,
-			Title:        issue.Title,
-			Username:     issue.User.Login,
-			CreationTime: issue.CreatedAt,
-			Preview:      buildPreview(issue.Body),
-		})
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", "link-tracker")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("send github request: %w", err)
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			resp.Body.Close()
+			return nil, fmt.Errorf("github returned unexpected status: %s", resp.Status)
+		}
+
+		var issues []IssueResponse
+		if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decode github response: %w", err)
+		}
+
+		linkHeader := resp.Header.Get("Link")
+		resp.Body.Close()
+
+		for _, issue := range issues {
+			eventType := update.GitHubEventIssue
+			if issue.PullRequest != nil {
+				eventType = update.GitHubEventPullRequest
+			}
+
+			events = append(events, update.GitHubEvent{
+				Type:         eventType,
+				Title:        issue.Title,
+				Username:     issue.User.Login,
+				CreationTime: issue.CreatedAt,
+				Preview:      buildPreview(issue.Body),
+			})
+		}
+
+		// checks if there is next page
+		if !strings.Contains(linkHeader, `rel="next"`) {
+			break
+		}
+
+		page++
 	}
 
 	return events, nil
@@ -98,5 +126,6 @@ func buildPreview(text string) string {
 		return text
 	}
 
-	return text[:previewLimit]
+	textRunes := []rune(text)
+	return string(textRunes[:previewLimit])
 }

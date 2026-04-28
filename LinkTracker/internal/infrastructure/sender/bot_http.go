@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/sender"
+	appsender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/sender"
 	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 )
 
@@ -17,7 +17,7 @@ type BotHTTPSender struct {
 	client *bothttp.Client
 }
 
-var _ sender.MessageSender = (*BotHTTPSender)(nil)
+var _ appsender.MessageSender = (*BotHTTPSender)(nil)
 
 func NewHTTPSender(client *bothttp.Client) *BotHTTPSender {
 	return &BotHTTPSender{
@@ -25,7 +25,7 @@ func NewHTTPSender(client *bothttp.Client) *BotHTTPSender {
 	}
 }
 
-func (s *BotHTTPSender) SendUpdate(ctx context.Context, msg sender.UpdateMessage) error {
+func (s *BotHTTPSender) SendUpdate(ctx context.Context, msg appsender.UpdateMessage) error {
 	parts := splitMessageByBullet(msg.Description, maxMessageLength)
 
 	for _, part := range parts {
@@ -47,7 +47,7 @@ func (s *BotHTTPSender) SendUpdate(ctx context.Context, msg sender.UpdateMessage
 	return nil
 }
 
-func (s *BotHTTPSender) SendProblems(ctx context.Context, msg sender.ProblemsMessage) error {
+func (s *BotHTTPSender) SendProblems(ctx context.Context, msg appsender.ProblemsMessage) error {
 	parts := splitMessageByBullet(msg.Description, maxMessageLength)
 
 	for _, part := range parts {

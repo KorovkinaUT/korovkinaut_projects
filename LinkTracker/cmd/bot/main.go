@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/dispatcher"
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
-	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 	scrapperhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/scrapper"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/receiver"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/telegram"
 )
 
@@ -23,6 +24,15 @@ func main() {
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
+	}
+
+	var kafkaCfg *config.KafkaConfig
+	if strings.ToUpper(cfg.UpdatesTransport) == "KAFKA" {
+		kafkaCfg, err = config.LoadKafkaConfig()
+		if err != nil {
+			logger.Error("failed to load kafka config", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -50,9 +60,14 @@ func main() {
 
 	registerBotCommands(tgClient, d.Commands(), logger)
 
-	// For communication with scrapper
-	httpServer := bothttp.NewServer(cfg.BotAddress(), tgClient.SendMessage)
-	httpServer.Start(logger, stop)
+	// For getting updates from scrapper
+	messageReceiver, err := receiver.NewMessageReceiver(cfg.UpdatesTransport, cfg, kafkaCfg, tgClient.SendMessage)
+	if err != nil {
+		logger.Error("failed to initialize updates receiver", "error", err)
+		os.Exit(1)
+	}
+
+	messageReceiver.Start(ctx, logger, stop)
 
 	updates := tgClient.UpdatesChan(0)
 
@@ -67,8 +82,8 @@ func main() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 			defer cancel()
 
-			if err := httpServer.Shutdown(shutdownCtx); err != nil {
-				logger.Error("failed to shutdown bot http server", "error", err)
+			if err := messageReceiver.Shutdown(shutdownCtx); err != nil {
+				logger.Error("failed to shutdown updates receiver", "error", err)
 			}
 
 			return

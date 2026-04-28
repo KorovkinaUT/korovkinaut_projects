@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,11 +93,7 @@ func (c *Checker) Check(ctx context.Context) error {
 		trackedLinks := makeTrackedLinks(batch)
 
 		var batchProblems []problem
-		if c.workersCount <= 1 {
-			batchProblems = c.processBatchSequential(ctx, trackedLinks)
-		} else {
-			batchProblems = c.processBatchParallel(ctx, trackedLinks)
-		}
+		batchProblems = c.processBatch(ctx, trackedLinks)
 
 		problems = append(problems, batchProblems...)
 		offset += int64(len(batch))
@@ -135,12 +130,18 @@ func (c *Checker) checkURL(ctx context.Context, rawURL string, lastUpdated time.
 		return fmt.Errorf("no client registered for link type %q", parsedLink.Type())
 	}
 
-	events, err := client.GetEvents(ctx, parsedLink)
+	events, err := client.GetNewEvents(ctx, parsedLink, lastUpdated)
 	if err != nil {
 		return fmt.Errorf("get events for %q: %w", rawURL, err)
 	}
 
-	newEvents := filterNewEvents(events, lastUpdated)
+	// GetNewEvents works with precision to the second, so finer filtering is needed
+	newEvents := make([]update.Event, 0)
+	for _, e := range events {
+		if e.CreatedAt().After(lastUpdated) {
+			newEvents = append(newEvents, e)
+		}
+	}
 	if len(newEvents) == 0 {
 		return nil
 	}
@@ -179,45 +180,14 @@ func (c *Checker) checkURL(ctx context.Context, rawURL string, lastUpdated time.
 	}
 
 	// update info about last upodated time in database
-	if err := c.subscriptions.UpdateLastUpdated(ctx, rawURL, newEvents[len(newEvents)-1].CreatedAt()); err != nil {
+	if err := c.subscriptions.UpdateLastUpdated(ctx, rawURL, latestEventTime(newEvents)); err != nil {
 		return fmt.Errorf("update last updated for url %q: %w", rawURL, err)
 	}
 
 	return nil
 }
 
-func (c *Checker) processBatchSequential(ctx context.Context, links []trackedLink) []problem {
-	problems := make([]problem, 0)
-
-	for _, link := range links {
-		if err := c.checkURL(ctx, link.URL, link.LastUpdated); err != nil {
-			c.logger.Error(
-				"failed to check tracked url",
-				"url", link.URL,
-				"error", err,
-			)
-
-			// aggregate errors for sending them to users
-			p, collectErr := c.getProblem(ctx, link.URL, err)
-			if collectErr != nil {
-				c.logger.Error(
-					"failed to collect problem for tracked url",
-					"url", link.URL,
-					"error", collectErr,
-				)
-				continue
-			}
-
-			if p != nil {
-				problems = append(problems, *p)
-			}
-		}
-	}
-
-	return problems
-}
-
-func (c *Checker) processBatchParallel(ctx context.Context, links []trackedLink) []problem {
+func (c *Checker) processBatch(ctx context.Context, links []trackedLink) []problem {
 	jobs := make(chan trackedLink, len(links))
 	results := make(chan checkResult, len(links))
 
@@ -325,29 +295,14 @@ func (c *Checker) getProblem(ctx context.Context, rawURL string, checkErr error)
 	}, nil
 }
 
-func filterNewEvents(events []update.Event, lastUpdated time.Time) []update.Event {
-	if len(events) == 0 {
-		return nil
-	}
+func latestEventTime(events []update.Event) time.Time {
+	latest := events[0].CreatedAt()
 
-	sortedEvents := make([]update.Event, len(events))
-	copy(sortedEvents, events)
-
-	sort.Slice(sortedEvents, func(i, j int) bool {
-		return sortedEvents[i].CreatedAt().Before(sortedEvents[j].CreatedAt())
-	})
-
-	firstNewIdx := len(sortedEvents)
-	for i, event := range sortedEvents {
-		if event.CreatedAt().After(lastUpdated) {
-			firstNewIdx = i
-			break
+	for _, e := range events[1:] {
+		if e.CreatedAt().After(latest) {
+			latest = e.CreatedAt()
 		}
 	}
 
-	if firstNewIdx == len(sortedEvents) {
-		return nil
-	}
-
-	return sortedEvents[firstNewIdx:]
+	return latest
 }
