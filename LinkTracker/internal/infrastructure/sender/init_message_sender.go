@@ -2,6 +2,7 @@ package sender
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -12,15 +13,20 @@ import (
 
 func NewMessageSender(
 	transport string,
-	cfg *config.KafkaConfig,
-	botBaseURL string,
+	baseURL string,
 	httpClient *http.Client,
+	kafkaCfg *config.KafkaConfig,
+	retryCfg *config.RetryConfig,
+	cbCfg *config.CircuitBreakerConfig,
+	logger *slog.Logger,
 ) (appsender.MessageSender, error) {
 	switch strings.ToUpper(transport) {
 	case "HTTP":
-		return NewHTTPSender(bothttp.NewClient(botBaseURL, httpClient)), nil
+		httpSender := NewBotHTTPSender(bothttp.NewClient(baseURL, httpClient, retryCfg, cbCfg))
+		kafkaSender := NewBotKafkaSender(kafkaCfg.Brokers, kafkaCfg.ProcessedUpdatesTopic)
+		return NewBotFallbackSender(httpSender, kafkaSender, logger), nil
 	case "KAFKA":
-		return NewKafkaSender(cfg.Brokers, cfg.UpdatesTopic), nil
+		return NewBotKafkaSender(kafkaCfg.Brokers, kafkaCfg.ProcessedUpdatesTopic), nil
 	default:
 		return nil, fmt.Errorf("unknown updates transport: %q", transport)
 	}

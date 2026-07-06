@@ -20,6 +20,9 @@ type BotConfig struct {
 	ScrapperPort int    `envconfig:"SCRAPPER_PORT" default:"8081"`
 
 	HttpTimeout     time.Duration `envconfig:"HTTP_TIMEOUT" default:"5s"`
+	Retry           *RetryConfig
+	CircuitBreaker  *CircuitBreakerConfig
+	RateLimit       *RateLimitConfig
 	ShutdownTimeout time.Duration `envconfig:"SHUTDOWN_TIMEOUT" default:"10s"`
 }
 
@@ -34,6 +37,16 @@ func (c *BotConfig) ScrapperBaseURL() string {
 func LoadBotConfig() (*BotConfig, error) {
 	var cfg BotConfig
 	if err := envconfig.Process("", &cfg); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.Retry.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.CircuitBreaker.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.RateLimit.Validate(); err != nil {
 		return nil, err
 	}
 

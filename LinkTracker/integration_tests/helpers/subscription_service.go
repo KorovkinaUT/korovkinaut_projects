@@ -7,7 +7,28 @@ import (
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/database"
 )
 
-func NewTestSubscriptionService(t *testing.T, db *TestDatabase) *service.SubscriptionService {
+func NewTestBaseSubscriptionService(t *testing.T, db *TestDatabase) service.SubscriptionService {
+	t.Helper()
+
+	return NewTestSubscriptionService(t, db, false, nil)
+}
+
+func NewTestCachedSubscriptionService(
+	t *testing.T,
+	db *TestDatabase,
+	listCache service.ListCache,
+) service.SubscriptionService {
+	t.Helper()
+
+	return NewTestSubscriptionService(t, db, true, listCache)
+}
+
+func NewTestSubscriptionService(
+	t *testing.T,
+	db *TestDatabase,
+	cacheEnabled bool,
+	listCache service.ListCache,
+) service.SubscriptionService {
 	t.Helper()
 
 	pool := db.NewPool(t)
@@ -18,7 +39,10 @@ func NewTestSubscriptionService(t *testing.T, db *TestDatabase) *service.Subscri
 	}
 
 	return service.NewSubscriptionService(
+		cacheEnabled,
 		chatRepository,
 		subscriptionRepository,
+		listCache,
+		nil,
 	)
 }

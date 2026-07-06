@@ -13,10 +13,10 @@ import (
 
 // Handler for /links
 type LinksHandler struct {
-	subscriptions *service.SubscriptionService
+	subscriptions service.SubscriptionService
 }
 
-func NewLinksHandler(subscriptions *service.SubscriptionService) *LinksHandler {
+func NewLinksHandler(subscriptions service.SubscriptionService) *LinksHandler {
 	return &LinksHandler{
 		subscriptions: subscriptions,
 	}

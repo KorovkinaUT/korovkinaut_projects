@@ -15,9 +15,7 @@ import (
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/integration_tests/helpers"
 	appupdates "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/updates"
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
-	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 	stackoverflowhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/stackoverflow"
-	httpsender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/sender"
 )
 
 func TestChecker_StackOverflowAnswer_SendsFormattedUpdate(t *testing.T) {
@@ -29,7 +27,7 @@ func TestChecker_StackOverflowAnswer_SendsFormattedUpdate(t *testing.T) {
 		defer db.Close(t)
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 301
 		const trackedURL = "https://stackoverflow.com/questions/123/test"
@@ -79,14 +77,11 @@ func TestChecker_StackOverflowAnswer_SendsFormattedUpdate(t *testing.T) {
 		)
 		defer stackServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		stackClient := stackoverflowhttp.NewClient(stackServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		stackClient := stackoverflowhttp.NewClient(stackServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -94,12 +89,9 @@ func TestChecker_StackOverflowAnswer_SendsFormattedUpdate(t *testing.T) {
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewStackOverflowClient(stackClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.StackOverflowFormatter{},
 			},
 		)
 
@@ -113,44 +105,53 @@ func TestChecker_StackOverflowAnswer_SendsFormattedUpdate(t *testing.T) {
 			t.Fatalf("checker returned error: %v", err)
 		}
 
-		if len(*receivedUpdates) != 1 {
-			t.Fatalf("unexpected sent updates count: got %d, want 1", len(*receivedUpdates))
+		if len(rawSender.problems) != 0 {
+			t.Errorf("unexpected problem batches count: got %d, want 0", len(rawSender.problems))
 		}
 
-		update := (*receivedUpdates)[0]
-
-		if update.URL != trackedURL {
-			t.Errorf("unexpected update url: got %q, want %q", update.URL, trackedURL)
+		if len(rawSender.updates) != 1 {
+			t.Fatalf("unexpected sent raw updates count: got %d, want 1", len(rawSender.updates))
 		}
 
-		slices.Sort(update.TgChatIDs)
-		if !slices.Equal(update.TgChatIDs, []int64{chatID}) {
-			t.Errorf("unexpected chat ids: got %v, want [%d]", update.TgChatIDs, chatID)
+		updateMsg := rawSender.updates[0]
+
+		if updateMsg.URL != trackedURL {
+			t.Errorf("unexpected update url: got %q, want %q", updateMsg.URL, trackedURL)
 		}
 
-		if !strings.Contains(update.Description, trackedURL) {
-			t.Errorf("update description must mention tracked url, got %q", update.Description)
+		slices.Sort(updateMsg.TgChatIDs)
+		if !slices.Equal(updateMsg.TgChatIDs, []int64{chatID}) {
+			t.Errorf("unexpected chat ids: got %v, want [%d]", updateMsg.TgChatIDs, chatID)
 		}
 
-		if !strings.Contains(update.Description, "ответ") {
-			t.Errorf("update description must contain answer label, got %q", update.Description)
+		if len(updateMsg.Events) != 1 {
+			t.Fatalf("unexpected events count: got %d, want 1", len(updateMsg.Events))
 		}
 
-		if !strings.Contains(update.Description, "How to use context in Go?") {
-			t.Errorf("update description must contain question title, got %q", update.Description)
+		event := updateMsg.Events[0]
+
+		if event.Source != string(schedulerlink.TypeStackOverflow) {
+			t.Errorf("unexpected event source: got %q, want %q", event.Source, string(schedulerlink.TypeStackOverflow))
 		}
 
-		if !strings.Contains(update.Description, "alice") {
-			t.Errorf("update description must contain username, got %q", update.Description)
+		if event.Type != "answer" {
+			t.Errorf("unexpected event type: got %q, want %q", event.Type, "answer")
 		}
 
-		expectedTime := createdAt.Format("02 Jan 2006 15:04")
-		if !strings.Contains(update.Description, expectedTime) {
-			t.Errorf("update description must contain formatted creation time, got %q", update.Description)
+		if event.Title != "How to use context in Go?" {
+			t.Errorf("unexpected event title: got %q, want %q", event.Title, "How to use context in Go?")
 		}
 
-		if !strings.Contains(update.Description, expectedPreview) {
-			t.Errorf("update description must contain trimmed preview, got %q", update.Description)
+		if event.Author != "alice" {
+			t.Errorf("unexpected event author: got %q, want %q", event.Author, "alice")
+		}
+
+		if !event.CreationTime.Equal(createdAt) {
+			t.Errorf("unexpected event creation time: got %v, want %v", event.CreationTime, createdAt)
+		}
+
+		if event.Preview != expectedPreview {
+			t.Errorf("unexpected event preview: got %q, want %q", event.Preview, expectedPreview)
 		}
 	})
 }
@@ -164,7 +165,7 @@ func TestChecker_StackOverflowComment_SendsFormattedUpdate(t *testing.T) {
 		defer db.Close(t)
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 302
 		const trackedURL = "https://stackoverflow.com/questions/123/test"
@@ -214,14 +215,11 @@ func TestChecker_StackOverflowComment_SendsFormattedUpdate(t *testing.T) {
 		)
 		defer stackServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		stackClient := stackoverflowhttp.NewClient(stackServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		stackClient := stackoverflowhttp.NewClient(stackServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -229,12 +227,9 @@ func TestChecker_StackOverflowComment_SendsFormattedUpdate(t *testing.T) {
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewStackOverflowClient(stackClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.StackOverflowFormatter{},
 			},
 		)
 
@@ -248,44 +243,53 @@ func TestChecker_StackOverflowComment_SendsFormattedUpdate(t *testing.T) {
 			t.Fatalf("checker returned error: %v", err)
 		}
 
-		if len(*receivedUpdates) != 1 {
-			t.Fatalf("unexpected sent updates count: got %d, want 1", len(*receivedUpdates))
+		if len(rawSender.problems) != 0 {
+			t.Errorf("unexpected problem batches count: got %d, want 0", len(rawSender.problems))
 		}
 
-		update := (*receivedUpdates)[0]
-
-		if update.URL != trackedURL {
-			t.Errorf("unexpected update url: got %q, want %q", update.URL, trackedURL)
+		if len(rawSender.updates) != 1 {
+			t.Fatalf("unexpected sent raw updates count: got %d, want 1", len(rawSender.updates))
 		}
 
-		slices.Sort(update.TgChatIDs)
-		if !slices.Equal(update.TgChatIDs, []int64{chatID}) {
-			t.Errorf("unexpected chat ids: got %v, want [%d]", update.TgChatIDs, chatID)
+		updateMsg := rawSender.updates[0]
+
+		if updateMsg.URL != trackedURL {
+			t.Errorf("unexpected update url: got %q, want %q", updateMsg.URL, trackedURL)
 		}
 
-		if !strings.Contains(update.Description, trackedURL) {
-			t.Errorf("update description must mention tracked url, got %q", update.Description)
+		slices.Sort(updateMsg.TgChatIDs)
+		if !slices.Equal(updateMsg.TgChatIDs, []int64{chatID}) {
+			t.Errorf("unexpected chat ids: got %v, want [%d]", updateMsg.TgChatIDs, chatID)
 		}
 
-		if !strings.Contains(update.Description, "комментарий") {
-			t.Errorf("update description must contain comment label, got %q", update.Description)
+		if len(updateMsg.Events) != 1 {
+			t.Fatalf("unexpected events count: got %d, want 1", len(updateMsg.Events))
 		}
 
-		if !strings.Contains(update.Description, "What is an interface in Go?") {
-			t.Errorf("update description must contain question title, got %q", update.Description)
+		event := updateMsg.Events[0]
+
+		if event.Source != string(schedulerlink.TypeStackOverflow) {
+			t.Errorf("unexpected event source: got %q, want %q", event.Source, string(schedulerlink.TypeStackOverflow))
 		}
 
-		if !strings.Contains(update.Description, "bob") {
-			t.Errorf("update description must contain username, got %q", update.Description)
+		if event.Type != "comment" {
+			t.Errorf("unexpected event type: got %q, want %q", event.Type, "comment")
 		}
 
-		expectedTime := createdAt.Format("02 Jan 2006 15:04")
-		if !strings.Contains(update.Description, expectedTime) {
-			t.Errorf("update description must contain formatted creation time, got %q", update.Description)
+		if event.Title != "What is an interface in Go?" {
+			t.Errorf("unexpected event title: got %q, want %q", event.Title, "What is an interface in Go?")
 		}
 
-		if !strings.Contains(update.Description, expectedPreview) {
-			t.Errorf("update description must contain trimmed preview, got %q", update.Description)
+		if event.Author != "bob" {
+			t.Errorf("unexpected event author: got %q, want %q", event.Author, "bob")
+		}
+
+		if !event.CreationTime.Equal(createdAt) {
+			t.Errorf("unexpected event creation time: got %v, want %v", event.CreationTime, createdAt)
+		}
+
+		if event.Preview != expectedPreview {
+			t.Errorf("unexpected event preview: got %q, want %q", event.Preview, expectedPreview)
 		}
 	})
 }

@@ -19,7 +19,7 @@ type BotHTTPSender struct {
 
 var _ appsender.MessageSender = (*BotHTTPSender)(nil)
 
-func NewHTTPSender(client *bothttp.Client) *BotHTTPSender {
+func NewBotHTTPSender(client *bothttp.Client) *BotHTTPSender {
 	return &BotHTTPSender{
 		client: client,
 	}

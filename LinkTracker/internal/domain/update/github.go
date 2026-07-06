@@ -17,6 +17,22 @@ type GitHubEvent struct {
 	Preview      string
 }
 
+func (e GitHubEvent) EventType() string {
+	return string(e.Type)
+}
+
+func (e GitHubEvent) EventTitle() string {
+	return string(e.Title)
+}
+
+func (e GitHubEvent) EventAuthor() string {
+	return string(e.Username)
+}
+
 func (e GitHubEvent) CreatedAt() time.Time {
 	return e.CreationTime
+}
+
+func (e GitHubEvent) EventPreview() string {
+	return string(e.Preview)
 }

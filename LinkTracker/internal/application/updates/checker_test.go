@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,26 +35,13 @@ func (c fakeLinkClient) GetNewEvents(
 	return c.getNewEvents(ctx, link, since)
 }
 
-type fakeFormatter struct {
-	linkType schedulerlink.LinkType
-	format   func(rawURL string, events []update.Event) (string, error)
-}
-
-func (f fakeFormatter) Type() schedulerlink.LinkType {
-	return f.linkType
-}
-
-func (f fakeFormatter) Format(rawURL string, events []update.Event) (string, error) {
-	return f.format(rawURL, events)
-}
-
-type fakeMessageSender struct {
+type fakeRawUpdateSender struct {
 	mu       sync.Mutex
-	updates  []sender.UpdateMessage
-	problems []sender.ProblemsMessage
+	updates  []sender.RawUpdateEvents
+	problems [][]sender.Problem
 }
 
-func (s *fakeMessageSender) SendUpdate(ctx context.Context, msg sender.UpdateMessage) error {
+func (s *fakeRawUpdateSender) SendUpdateEvents(ctx context.Context, msg sender.RawUpdateEvents) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -61,7 +49,7 @@ func (s *fakeMessageSender) SendUpdate(ctx context.Context, msg sender.UpdateMes
 	return nil
 }
 
-func (s *fakeMessageSender) SendProblems(ctx context.Context, msg sender.ProblemsMessage) error {
+func (s *fakeRawUpdateSender) SendProblems(ctx context.Context, msg []sender.Problem) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -70,7 +58,7 @@ func (s *fakeMessageSender) SendProblems(ctx context.Context, msg sender.Problem
 }
 
 func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
-	// arrange
+	//arrange
 	ctx := context.Background()
 
 	const trackedURL = "https://github.com/user/repo"
@@ -79,7 +67,7 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	parser := schedulerlink.NewService()
 	subscriptionService := newTestSubscriptionService()
-	messageSender := &fakeMessageSender{}
+	messageSender := &fakeRawUpdateSender{}
 
 	err := subscriptionService.RegisterChat(ctx, 1)
 	if err != nil {
@@ -123,6 +111,8 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	eventCreationTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
 	githubClient := fakeLinkClient{
 		linkType: schedulerlink.TypeGitHub,
 		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
@@ -142,7 +132,7 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 						Type:         update.GitHubEventIssue,
 						Title:        "Issue title",
 						Username:     "alice",
-						CreationTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+						CreationTime: eventCreationTime,
 						Preview:      "Issue preview",
 					},
 				}, nil
@@ -158,13 +148,6 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 		},
 	}
 
-	githubFormatter := fakeFormatter{
-		linkType: schedulerlink.TypeGitHub,
-		format: func(rawURL string, events []update.Event) (string, error) {
-			return "Link was updated", nil
-		},
-	}
-
 	checker := NewChecker(
 		logger,
 		100,
@@ -173,13 +156,12 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 		parser,
 		messageSender,
 		[]LinkClient{githubClient},
-		[]Formatter{githubFormatter},
 	)
 
-	// act
+	//act
 	err = checker.Check(ctx)
 
-	// assert
+	//assert
 	if err != nil {
 		t.Errorf("unexpected checker error: %v", err)
 	}
@@ -199,14 +181,42 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 			t.Errorf("unexpected update url: got %q, want %q", gotUpdate.URL, trackedURL)
 		}
 
-		if gotUpdate.Description != "Link was updated" {
-			t.Errorf("unexpected update description: got %q, want %q", gotUpdate.Description, "Link was updated")
-		}
-
 		slices.Sort(gotUpdate.TgChatIDs)
 		wantChatIDs := []int64{1, 2}
 		if !slices.Equal(gotUpdate.TgChatIDs, wantChatIDs) {
 			t.Errorf("unexpected update chat ids: got %#v, want %#v", gotUpdate.TgChatIDs, wantChatIDs)
+		}
+
+		if len(gotUpdate.Events) != 1 {
+			t.Errorf("unexpected number of events: got %d, want %d", len(gotUpdate.Events), 1)
+		}
+
+		if len(gotUpdate.Events) == 1 {
+			gotEvent := gotUpdate.Events[0]
+
+			if gotEvent.Source != string(schedulerlink.TypeGitHub) {
+				t.Errorf("unexpected event source: got %q, want %q", gotEvent.Source, string(schedulerlink.TypeGitHub))
+			}
+
+			if gotEvent.Type != string(update.GitHubEventIssue) {
+				t.Errorf("unexpected event type: got %q, want %q", gotEvent.Type, string(update.GitHubEventIssue))
+			}
+
+			if gotEvent.Title != "Issue title" {
+				t.Errorf("unexpected event title: got %q, want %q", gotEvent.Title, "Issue title")
+			}
+
+			if gotEvent.Author != "alice" {
+				t.Errorf("unexpected event author: got %q, want %q", gotEvent.Author, "alice")
+			}
+
+			if gotEvent.Preview != "Issue preview" {
+				t.Errorf("unexpected event preview: got %q, want %q", gotEvent.Preview, "Issue preview")
+			}
+
+			if !gotEvent.CreationTime.Equal(eventCreationTime) {
+				t.Errorf("unexpected event creation time: got %v, want %v", gotEvent.CreationTime, eventCreationTime)
+			}
 		}
 	}
 
@@ -216,7 +226,7 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 	}
 
 	gotTrackedUpdatedAt := trackedURLs[trackedURL]
-	wantTrackedUpdatedAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantTrackedUpdatedAt := eventCreationTime
 	if !gotTrackedUpdatedAt.Equal(wantTrackedUpdatedAt) {
 		t.Errorf("unexpected tracked url updated_at: got %v, want %v", gotTrackedUpdatedAt, wantTrackedUpdatedAt)
 	}
@@ -229,13 +239,13 @@ func TestChecker_Check_SendsUpdatesOnlyToSubscribedChats(t *testing.T) {
 }
 
 func TestChecker_Check_GitHubNon2xxDoesNotCrash(t *testing.T) {
-	// arrange
+	//arrange
 	ctx := context.Background()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	parser := schedulerlink.NewService()
 	subscriptionService := newTestSubscriptionService()
-	messageSender := &fakeMessageSender{}
+	messageSender := &fakeRawUpdateSender{}
 
 	err := subscriptionService.RegisterChat(ctx, 1)
 	if err != nil {
@@ -274,13 +284,12 @@ func TestChecker_Check_GitHubNon2xxDoesNotCrash(t *testing.T) {
 		parser,
 		messageSender,
 		[]LinkClient{githubClient},
-		nil,
 	)
 
-	// act
+	//act
 	err = checker.Check(ctx)
 
-	// assert
+	//assert
 	if err != nil {
 		t.Errorf("unexpected checker error: %v", err)
 	}
@@ -290,18 +299,30 @@ func TestChecker_Check_GitHubNon2xxDoesNotCrash(t *testing.T) {
 	}
 
 	if len(messageSender.problems) != 1 {
-		t.Errorf("unexpected sent problem messages: got %d, want %d", len(messageSender.problems), 1)
+		t.Errorf("unexpected sent problem batches: got %d, want %d", len(messageSender.problems), 1)
+	}
+
+	if len(messageSender.problems) == 1 {
+		gotProblems := messageSender.problems[0]
+
+		if len(gotProblems) != 1 {
+			t.Errorf("unexpected problems count: got %d, want %d", len(gotProblems), 1)
+		}
+
+		if len(gotProblems) == 1 {
+			assertProblem(t, gotProblems[0], trackedURL, "github returned unexpected status: 500 Internal Server Error", []int64{1})
+		}
 	}
 }
 
 func TestChecker_Check_GitHubInvalidBodyDoesNotCrash(t *testing.T) {
-	// arrange
+	//arrange
 	ctx := context.Background()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	parser := schedulerlink.NewService()
 	subscriptionService := newTestSubscriptionService()
-	messageSender := &fakeMessageSender{}
+	messageSender := &fakeRawUpdateSender{}
 
 	err := subscriptionService.RegisterChat(ctx, 1)
 	if err != nil {
@@ -321,6 +342,8 @@ func TestChecker_Check_GitHubInvalidBodyDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	expectedProblem := "decode github response: json: cannot unmarshal number into Go struct field RepositoryResponse.updated_at of type time.Time"
+
 	githubClient := fakeLinkClient{
 		linkType: schedulerlink.TypeGitHub,
 		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
@@ -328,7 +351,7 @@ func TestChecker_Check_GitHubInvalidBodyDoesNotCrash(t *testing.T) {
 				return nil, errors.New("unexpected since")
 			}
 
-			return nil, errors.New("decode github response: json: cannot unmarshal number into Go struct field RepositoryResponse.updated_at of type time.Time")
+			return nil, errors.New(expectedProblem)
 		},
 	}
 
@@ -340,13 +363,12 @@ func TestChecker_Check_GitHubInvalidBodyDoesNotCrash(t *testing.T) {
 		parser,
 		messageSender,
 		[]LinkClient{githubClient},
-		nil,
 	)
 
-	// act
+	//act
 	err = checker.Check(ctx)
 
-	// assert
+	//assert
 	if err != nil {
 		t.Errorf("unexpected checker error: %v", err)
 	}
@@ -356,18 +378,30 @@ func TestChecker_Check_GitHubInvalidBodyDoesNotCrash(t *testing.T) {
 	}
 
 	if len(messageSender.problems) != 1 {
-		t.Errorf("unexpected sent problem messages: got %d, want %d", len(messageSender.problems), 1)
+		t.Errorf("unexpected sent problem batches: got %d, want %d", len(messageSender.problems), 1)
+	}
+
+	if len(messageSender.problems) == 1 {
+		gotProblems := messageSender.problems[0]
+
+		if len(gotProblems) != 1 {
+			t.Errorf("unexpected problems count: got %d, want %d", len(gotProblems), 1)
+		}
+
+		if len(gotProblems) == 1 {
+			assertProblem(t, gotProblems[0], trackedURL, expectedProblem, []int64{1})
+		}
 	}
 }
 
 func TestChecker_Check_StackOverflowNon2xxDoesNotCrash(t *testing.T) {
-	// arrange
+	//arrange
 	ctx := context.Background()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	parser := schedulerlink.NewService()
 	subscriptionService := newTestSubscriptionService()
-	messageSender := &fakeMessageSender{}
+	messageSender := &fakeRawUpdateSender{}
 
 	err := subscriptionService.RegisterChat(ctx, 1)
 	if err != nil {
@@ -406,13 +440,12 @@ func TestChecker_Check_StackOverflowNon2xxDoesNotCrash(t *testing.T) {
 		parser,
 		messageSender,
 		[]LinkClient{stackClient},
-		nil,
 	)
 
-	// act
+	//act
 	err = checker.Check(ctx)
 
-	// assert
+	//assert
 	if err != nil {
 		t.Errorf("unexpected checker error: %v", err)
 	}
@@ -422,18 +455,30 @@ func TestChecker_Check_StackOverflowNon2xxDoesNotCrash(t *testing.T) {
 	}
 
 	if len(messageSender.problems) != 1 {
-		t.Errorf("unexpected sent problem messages: got %d, want %d", len(messageSender.problems), 1)
+		t.Errorf("unexpected sent problem batches: got %d, want %d", len(messageSender.problems), 1)
+	}
+
+	if len(messageSender.problems) == 1 {
+		gotProblems := messageSender.problems[0]
+
+		if len(gotProblems) != 1 {
+			t.Errorf("unexpected problems count: got %d, want %d", len(gotProblems), 1)
+		}
+
+		if len(gotProblems) == 1 {
+			assertProblem(t, gotProblems[0], trackedURL, "stackoverflow returned unexpected status: 502 Bad Gateway", []int64{1})
+		}
 	}
 }
 
 func TestChecker_Check_StackOverflowInvalidBodyDoesNotCrash(t *testing.T) {
-	// arrange
+	//arrange
 	ctx := context.Background()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	parser := schedulerlink.NewService()
 	subscriptionService := newTestSubscriptionService()
-	messageSender := &fakeMessageSender{}
+	messageSender := &fakeRawUpdateSender{}
 
 	err := subscriptionService.RegisterChat(ctx, 1)
 	if err != nil {
@@ -453,6 +498,8 @@ func TestChecker_Check_StackOverflowInvalidBodyDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	expectedProblem := "decode stackoverflow response: json: cannot unmarshal string into Go struct field QuestionResponse.items of type []stackoverflow.Question"
+
 	stackClient := fakeLinkClient{
 		linkType: schedulerlink.TypeStackOverflow,
 		getNewEvents: func(ctx context.Context, link schedulerlink.SchedulerLink, since time.Time) ([]update.Event, error) {
@@ -460,7 +507,7 @@ func TestChecker_Check_StackOverflowInvalidBodyDoesNotCrash(t *testing.T) {
 				return nil, errors.New("unexpected since")
 			}
 
-			return nil, errors.New("decode stackoverflow response: json: cannot unmarshal string into Go struct field QuestionResponse.items of type []stackoverflow.Question")
+			return nil, errors.New(expectedProblem)
 		},
 	}
 
@@ -472,13 +519,12 @@ func TestChecker_Check_StackOverflowInvalidBodyDoesNotCrash(t *testing.T) {
 		parser,
 		messageSender,
 		[]LinkClient{stackClient},
-		nil,
 	)
 
-	// act
+	//act
 	err = checker.Check(ctx)
 
-	// assert
+	//assert
 	if err != nil {
 		t.Errorf("unexpected checker error: %v", err)
 	}
@@ -488,12 +534,49 @@ func TestChecker_Check_StackOverflowInvalidBodyDoesNotCrash(t *testing.T) {
 	}
 
 	if len(messageSender.problems) != 1 {
-		t.Errorf("unexpected sent problem messages: got %d, want %d", len(messageSender.problems), 1)
+		t.Errorf("unexpected sent problem batches: got %d, want %d", len(messageSender.problems), 1)
+	}
+
+	if len(messageSender.problems) == 1 {
+		gotProblems := messageSender.problems[0]
+
+		if len(gotProblems) != 1 {
+			t.Errorf("unexpected problems count: got %d, want %d", len(gotProblems), 1)
+		}
+
+		if len(gotProblems) == 1 {
+			assertProblem(t, gotProblems[0], trackedURL, expectedProblem, []int64{1})
+		}
 	}
 }
 
-func newTestSubscriptionService() *service.SubscriptionService {
+func assertProblem(
+	t *testing.T,
+	got sender.Problem,
+	wantURL string,
+	wantMessagePart string,
+	wantChatIDs []int64,
+) {
+	t.Helper()
+
+	if got.URL != wantURL {
+		t.Errorf("unexpected problem url: got %q, want %q", got.URL, wantURL)
+	}
+
+	if !strings.Contains(got.Message, wantMessagePart) {
+		t.Errorf("unexpected problem message: got %q, want to contain %q", got.Message, wantMessagePart)
+	}
+
+	slices.Sort(got.ChatIDs)
+	slices.Sort(wantChatIDs)
+
+	if !slices.Equal(got.ChatIDs, wantChatIDs) {
+		t.Errorf("unexpected problem chat ids: got %#v, want %#v", got.ChatIDs, wantChatIDs)
+	}
+}
+
+func newTestSubscriptionService() service.SubscriptionService {
 	chatRepository := memory.NewChatRepository()
 	subscriptionRepository := memory.NewSubscriptionRepository()
-	return service.NewSubscriptionService(chatRepository, subscriptionRepository)
+	return service.NewSubscriptionService(false, chatRepository, subscriptionRepository, nil, nil)
 }

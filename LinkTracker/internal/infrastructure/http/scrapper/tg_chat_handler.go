@@ -13,10 +13,10 @@ import (
 
 // Handler for /tg-chat/{id}
 type TgChatHandler struct {
-	subscriptions *service.SubscriptionService
+	subscriptions service.SubscriptionService
 }
 
-func NewTgChatHandler(subscriptions *service.SubscriptionService) *TgChatHandler {
+func NewTgChatHandler(subscriptions service.SubscriptionService) *TgChatHandler {
 	return &TgChatHandler{
 		subscriptions: subscriptions,
 	}

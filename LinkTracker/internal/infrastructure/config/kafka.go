@@ -8,12 +8,16 @@ import (
 
 type KafkaConfig struct {
 	Brokers              []string `envconfig:"KAFKA_BROKERS" default:"localhost:9092"`
-	UpdatesTopic         string   `envconfig:"KAFKA_UPDATES_TOPIC" default:"link-updates"`
-	UpdatesConsumerGroup string   `envconfig:"KAFKA_UPDATES_GROUP" default:"bot"`
 
-	DLQTopic            string        `envconfig:"KAFKA_DLQ_TOPIC" default:"dead-letter-queue"`
-	ConsumerMaxAttempts int           `envconfig:"KAFKA_CONSUMER_MAX_ATTEMPTS" default:"3"`
-	ConsumerRetryDelay  time.Duration `envconfig:"KAFKA_CONSUMER_RETRY_DELAY" default:"200ms"`
+	ProcessedUpdatesTopic         string   `envconfig:"KAFKA_PROCESSED_UPDATES_TOPIC" default:"link-updates-processed"`
+	ProcessedUpdatesConsumerGroup string   `envconfig:"KAFKA_PROCESSED_UPDATES_GROUP" default:"bot"`
+	RawUpdatesTopic         string `envconfig:"KAFKA_RAW_UPDATES_TOPIC" default:"link-updates-raw"`
+	RawUpdatesConsumerGroup string `envconfig:"KAFKA_RAW_UPDATES_GROUP" default:"agent"`
+
+	DLQTopic               string        `envconfig:"KAFKA_DLQ_TOPIC" default:"dead-letter-queue"`
+	ConsumerMaxAttempts    int           `envconfig:"KAFKA_CONSUMER_MAX_ATTEMPTS" default:"3"`
+	ConsumerBaseRetryDelay time.Duration `envconfig:"KAFKA_CONSUMER_BASE_RETRY_DELAY" default:"200ms"`
+	ConsumerMaxRetryDelay  time.Duration `envconfig:"KAFKA_CONSUMER_MAX_RETRY_DELAY" default:"5s"`
 }
 
 func LoadKafkaConfig() (*KafkaConfig, error) {
@@ -25,8 +29,11 @@ func LoadKafkaConfig() (*KafkaConfig, error) {
 	if cfg.ConsumerMaxAttempts < 1 {
 		cfg.ConsumerMaxAttempts = 3
 	}
-	if cfg.ConsumerRetryDelay < 0 {
-		cfg.ConsumerRetryDelay = 200 * time.Millisecond
+	if cfg.ConsumerBaseRetryDelay < 0 {
+		cfg.ConsumerBaseRetryDelay = 200 * time.Millisecond
+	}
+	if cfg.ConsumerMaxRetryDelay <= 0 {
+		cfg.ConsumerMaxRetryDelay = 5 * time.Second
 	}
 
 	return &cfg, nil

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/service"
@@ -19,6 +18,7 @@ import (
 	stackoverflowhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/stackoverflow"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/scheduler"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/sender"
+	valkeycache "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/valkey"
 )
 
 func main() {
@@ -36,12 +36,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	var kafkaCfg *config.KafkaConfig
-	if strings.ToUpper(cfg.UpdatesTransport) == "KAFKA" {
-		kafkaCfg, err = config.LoadKafkaConfig()
+	kafkaCfg, err := config.LoadKafkaConfig()
+	if err != nil {
+		logger.Error("failed to load kafka config", "error", err)
+		os.Exit(1)
+	}
+
+	var valkeyCfg *config.ValkeyConfig
+	if cfg.CacheEnabled {
+		valkeyCfg, err = config.LoadValkeyConfig()
 		if err != nil {
-			logger.Error("failed to load kafka config", "error", err)
-			os.Exit(1)
+			logger.Error("failed to load valkey config", "error", err)
 		}
 	}
 
@@ -65,25 +70,42 @@ func main() {
 		os.Exit(1)
 	}
 
+	// For GET /list requests caching
+	var listCache service.ListCache
+	if cfg.CacheEnabled && valkeyCfg != nil {
+		valkeyClient, err := valkeycache.NewClient(valkeyCfg)
+		if err != nil {
+			logger.Error("failed to create valkey client", "error", err)
+		} else {
+			defer valkeyClient.Close()
+
+			listCache = valkeycache.NewListCache(
+				valkeyClient,
+				valkeyCfg.TTL,
+				valkeyCfg.ClientSideCacheTTL,
+				valkeyCfg.Timeout,
+			)
+		}
+	}
+
 	// Stores subscriptions and chats info
 	subscriptionService := service.NewSubscriptionService(
+		cfg.CacheEnabled,
 		chatRepository,
 		subscriptionRepository,
+		listCache,
+		logger,
 	)
 
 	// For communication with bot
-	httpServer := scrapperhttp.NewServer(cfg.ScrapperAddress(), subscriptionService)
+	httpServer := scrapperhttp.NewServer(cfg.ScrapperAddress(), subscriptionService, cfg.RateLimit)
 	httpServer.Start(logger, stop)
 
 	// For communication with sites and bot
 	httpClient := &http.Client{Timeout: cfg.HttpTimeout}
-	githubClient := githubhttp.NewClient(cfg.GithubBaseURL, httpClient)
-	stackClient := stackoverflowhttp.NewClient(cfg.StackOverflowBaseURL, httpClient)
-	messageSender, err := sender.NewMessageSender(cfg.UpdatesTransport, kafkaCfg, cfg.BotBaseURL(), httpClient)
-	if err != nil {
-		logger.Error("failed to initialize message sender", "error", err)
-		os.Exit(1)
-	}
+	githubClient := githubhttp.NewClient(cfg.GithubBaseURL, httpClient, cfg.Retry, cfg.CircuitBreaker)
+	stackClient := stackoverflowhttp.NewClient(cfg.StackOverflowBaseURL, httpClient, cfg.Retry, cfg.CircuitBreaker)
+	updatesSender := sender.NewAgentKafkaSender(kafkaCfg.Brokers, kafkaCfg.RawUpdatesTopic)
 
 	// Parser for Checker of updates
 	parser := schedulerlink.NewService()
@@ -92,24 +114,16 @@ func main() {
 	githubLinkClient := updates.NewGitHubClient(githubClient)
 	stackOverflowLinkClient := updates.NewStackOverflowClient(stackClient)
 
-	// Interfaces for formatting update messages
-	githubFormatter := updates.GitHubFormatter{}
-	stackOverflowFormatter := updates.StackOverflowFormatter{}
-
 	checker := updates.NewChecker(
 		logger,
 		cfg.BatchSize,
 		cfg.WorkersCount,
 		subscriptionService,
 		parser,
-		messageSender,
+		updatesSender,
 		[]updates.LinkClient{
 			githubLinkClient,
 			stackOverflowLinkClient,
-		},
-		[]updates.Formatter{
-			githubFormatter,
-			stackOverflowFormatter,
 		},
 	)
 
@@ -142,11 +156,8 @@ func main() {
 		logger.Error("failed to stop scheduler", "error", err)
 	}
 
-	// If messageSender uses HTTP, there is no need to close it
-	if closer, ok := messageSender.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil {
-			logger.Error("failed to close message sender", "error", err)
-		}
+	if err := updatesSender.Close(); err != nil {
+		logger.Error("failed to close message sender", "error", err)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)

@@ -8,7 +8,7 @@ import (
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 )
 
-func TestNewMessageReceiver_HTTPTransport_ReturnsHTTPReceiver(t *testing.T) {
+func TestNewMessageReceiver_HTTPTransport_ReturnsCompositeReceiver(t *testing.T) {
 	//arrange
 	botCfg, kafkaCfg := testReceiverConfigs()
 	sendMessage := func(chatID int64, text string) error {
@@ -23,8 +23,8 @@ func TestNewMessageReceiver_HTTPTransport_ReturnsHTTPReceiver(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, ok := messageReceiver.(*BotHTTPReceiver); !ok {
-		t.Errorf("unexpected receiver type: got %T, want *BotHTTPReceiver", messageReceiver)
+	if _, ok := messageReceiver.(*BotCompositeReceiver); !ok {
+		t.Errorf("unexpected receiver type: got %T, want *CompositeReceiver", messageReceiver)
 	}
 }
 
@@ -82,11 +82,15 @@ func testReceiverConfigs() (*config.BotConfig, *config.KafkaConfig) {
 	return &config.BotConfig{
 			BotHost: "localhost",
 			BotPort: 8080,
+			RateLimit: &config.RateLimitConfig{
+				RPS:   10,
+				Burst: 20,
+			},
 		},
 		&config.KafkaConfig{
 			Brokers:              []string{"localhost:9092"},
-			UpdatesTopic:         "link-updates",
-			UpdatesConsumerGroup: "bot",
+			ProcessedUpdatesTopic:         "link-updates",
+			ProcessedUpdatesConsumerGroup: "bot",
 			DLQTopic:             "link-tracker-dlq",
 			ConsumerMaxAttempts:  3,
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 )
 
@@ -11,12 +12,15 @@ type BotHTTPReceiver struct {
 	server *bothttp.Server
 }
 
-func NewHTTPReceiver(
+var _ MessageReceiver = (*BotHTTPReceiver)(nil)
+
+func NewBotHTTPReceiver(
 	address string,
+	rateLimitCfg *config.RateLimitConfig,
 	sendMessage func(chatID int64, text string) error,
 ) *BotHTTPReceiver {
 	return &BotHTTPReceiver{
-		server: bothttp.NewServer(address, sendMessage),
+		server: bothttp.NewServer(address, sendMessage, rateLimitCfg),
 	}
 }
 

@@ -20,7 +20,7 @@ type BotKafkaSender struct {
 
 var _ appsender.MessageSender = (*BotKafkaSender)(nil)
 
-func NewKafkaSender(brokers []string, topic string) *BotKafkaSender {
+func NewBotKafkaSender(brokers []string, topic string) *BotKafkaSender {
 	return &BotKafkaSender{
 		writer: &kafka.Writer{
 			Addr:         kafka.TCP(brokers...),

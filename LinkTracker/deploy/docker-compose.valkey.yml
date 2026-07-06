@@ -1,0 +1,94 @@
+networks:
+  valkey-net:
+    driver: bridge
+
+services:
+  valkey1:
+    image: docker.io/bitnamilegacy/valkey-cluster:8.1.3
+    volumes:
+      - valkey_data_1:/bitnami/valkey/data
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+      VALKEY_NODES: valkey1 valkey2 valkey3 valkey4 valkey5 valkey6
+    networks:
+      - valkey-net
+
+  valkey2:
+    image: docker.io/bitnamilegacy/valkey-cluster:8.1.3
+    volumes:
+      - valkey_data_2:/bitnami/valkey/data
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+      VALKEY_NODES: valkey1 valkey2 valkey3 valkey4 valkey5 valkey6
+    networks:
+      - valkey-net
+
+  valkey3:
+    image: docker.io/bitnamilegacy/valkey-cluster:8.1.3
+    volumes:
+      - valkey_data_3:/bitnami/valkey/data
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+      VALKEY_NODES: valkey1 valkey2 valkey3 valkey4 valkey5 valkey6
+    networks:
+      - valkey-net
+
+  valkey4:
+    image: docker.io/bitnamilegacy/valkey-cluster:8.1.3
+    volumes:
+      - valkey_data_4:/bitnami/valkey/data
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+      VALKEY_NODES: valkey1 valkey2 valkey3 valkey4 valkey5 valkey6
+    networks:
+      - valkey-net
+
+  valkey5:
+    image: docker.io/bitnamilegacy/valkey-cluster:8.1.3
+    volumes:
+      - valkey_data_5:/bitnami/valkey/data
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+      VALKEY_NODES: valkey1 valkey2 valkey3 valkey4 valkey5 valkey6
+    networks:
+      - valkey-net
+
+  valkey6:
+    image: docker.io/bitnamilegacy/valkey-cluster:8.1.3
+    volumes:
+      - valkey_data_6:/bitnami/valkey/data
+    depends_on:
+      - valkey1
+      - valkey2
+      - valkey3
+      - valkey4
+      - valkey5
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+      VALKEY_CLUSTER_CREATOR: "yes"
+      VALKEY_CLUSTER_REPLICAS: "1"
+      VALKEY_NODES: valkey1 valkey2 valkey3 valkey4 valkey5 valkey6
+    networks:
+      - valkey-net
+
+  scrapper:
+    environment:
+      CACHE_ENABLED: "true"
+      VALKEY_ADDRESSES: valkey1:6379,valkey2:6379,valkey3:6379,valkey4:6379,valkey5:6379,valkey6:6379
+    depends_on:
+      - valkey1
+      - valkey2
+      - valkey3
+      - valkey4
+      - valkey5
+      - valkey6
+    networks:
+      - valkey-net
+
+volumes:
+  valkey_data_1:
+  valkey_data_2:
+  valkey_data_3:
+  valkey_data_4:
+  valkey_data_5:
+  valkey_data_6:

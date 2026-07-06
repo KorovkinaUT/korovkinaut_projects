@@ -7,22 +7,30 @@ import (
 	"net/http"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/service"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	httpinfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http"
 )
 
 type Server struct {
 	httpServer *http.Server
 }
 
-func NewServer(addr string, subscriptions *service.SubscriptionService) *Server {
+func NewServer(
+	addr string,
+	subscriptions service.SubscriptionService,
+	rateLimitCfg *config.RateLimitConfig,
+) *Server {
 	mux := http.NewServeMux()
 
 	mux.Handle("/tg-chat/", NewTgChatHandler(subscriptions))
 	mux.Handle("/links", NewLinksHandler(subscriptions))
 
+	rateLimiter := httpinfra.NewRateLimiter(rateLimitCfg)
+
 	return &Server{
 		httpServer: &http.Server{
 			Addr:    addr,
-			Handler: mux,
+			Handler: rateLimiter.Middleware(mux),
 		},
 	}
 }

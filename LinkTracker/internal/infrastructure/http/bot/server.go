@@ -6,26 +6,34 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	httpinfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http"
 )
 
 type Server struct {
 	httpServer *http.Server
 }
 
-func NewServer(addr string, sendMessage func(chatID int64, text string) error) *Server {
+func NewServer(
+	addr string,
+	sendMessage func(chatID int64, text string) error,
+	rateLimitCfg *config.RateLimitConfig,
+) *Server {
 	mux := http.NewServeMux()
 	mux.Handle("/updates", NewUpdatesHandler(sendMessage))
 
+	rateLimiter := httpinfra.NewRateLimiter(rateLimitCfg)
+
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: rateLimiter.Middleware(mux),
 	}
 
 	return &Server{
 		httpServer: srv,
 	}
 }
-
 func (s *Server) Start(logger *slog.Logger) error {
 	logger.Info("bot http server started", "addr", s.httpServer.Addr)
 

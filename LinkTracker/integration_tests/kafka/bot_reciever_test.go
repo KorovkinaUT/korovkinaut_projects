@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/integration_tests/helpers"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	kafkainfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/kafka"
 	botkafka "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/kafka/bot"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/receiver"
 
@@ -26,6 +28,16 @@ func TestBotKafkaReceiver_ValidMessage_HandlesMessage(t *testing.T) {
 	dlqTopic := helpers.UniqueTopic(t, "link-tracker-dlq")
 	helpers.CreateTopic(t, kafkaBrokers, topic)
 	helpers.CreateTopic(t, kafkaBrokers, dlqTopic)
+
+	kafkaCfg := config.KafkaConfig{
+		Brokers:                       kafkaBrokers,
+		ProcessedUpdatesTopic:         topic,
+		ProcessedUpdatesConsumerGroup: helpers.UniqueTopic(t, "consumer-group"),
+		DLQTopic:                      dlqTopic,
+		ConsumerMaxAttempts:           3,
+		ConsumerBaseRetryDelay:        200 * time.Millisecond,
+		ConsumerMaxRetryDelay:         5 * time.Second,
+	}
 
 	var (
 		mu       sync.Mutex
@@ -43,12 +55,8 @@ func TestBotKafkaReceiver_ValidMessage_HandlesMessage(t *testing.T) {
 		return nil
 	}
 
-	kafkaReceiver := receiver.NewKafkaReceiver(
-		kafkaBrokers,
-		topic,
-		helpers.UniqueTopic(t, "consumer-group"),
-		dlqTopic,
-		3,
+	kafkaReceiver := receiver.NewBotKafkaReceiver(
+		kafkaCfg,
 		sendMessage,
 	)
 
@@ -138,6 +146,16 @@ func TestBotKafkaReceiver_InvalidMessage_SendsMessageToDLQ(t *testing.T) {
 			helpers.CreateTopic(t, kafkaBrokers, topic)
 			helpers.CreateTopic(t, kafkaBrokers, dlqTopic)
 
+			kafkaCfg := config.KafkaConfig{
+				Brokers:                       kafkaBrokers,
+				ProcessedUpdatesTopic:         topic,
+				ProcessedUpdatesConsumerGroup: helpers.UniqueTopic(t, "consumer-group"),
+				DLQTopic:                      dlqTopic,
+				ConsumerMaxAttempts:           3,
+				ConsumerBaseRetryDelay:        200 * time.Millisecond,
+				ConsumerMaxRetryDelay:         5 * time.Second,
+			}
+
 			var sendMessageCalls atomic.Int64
 
 			sendMessage := func(chatID int64, text string) error {
@@ -145,12 +163,8 @@ func TestBotKafkaReceiver_InvalidMessage_SendsMessageToDLQ(t *testing.T) {
 				return nil
 			}
 
-			kafkaReceiver := receiver.NewKafkaReceiver(
-				kafkaBrokers,
-				topic,
-				helpers.UniqueTopic(t, "consumer-group"),
-				dlqTopic,
-				3,
+			kafkaReceiver := receiver.NewBotKafkaReceiver(
+				kafkaCfg,
 				sendMessage,
 			)
 
@@ -176,7 +190,7 @@ func TestBotKafkaReceiver_InvalidMessage_SendsMessageToDLQ(t *testing.T) {
 				Value: []byte(tt.value),
 			})
 
-			dlqKafkaMsg := helpers.ReadMessage(t, kafkaBrokers, dlqTopic)
+			dlqKafkaMsg := helpers.ReadMessageByKey(t, kafkaBrokers, dlqTopic, "100")
 
 			//assert
 			if sendMessageCalls.Load() != 0 {
@@ -187,7 +201,7 @@ func TestBotKafkaReceiver_InvalidMessage_SendsMessageToDLQ(t *testing.T) {
 				t.Errorf("unexpected dlq message key: got %q, want %q", string(dlqKafkaMsg.Key), "100")
 			}
 
-			var dlqMsg botkafka.DeadLetterMessage
+			var dlqMsg kafkainfra.DeadLetterMessage
 			if err := json.Unmarshal(dlqKafkaMsg.Value, &dlqMsg); err != nil {
 				t.Fatalf("unmarshal dlq message: %v", err)
 			}
@@ -229,6 +243,16 @@ func TestBotKafkaReceiver_ProcessingError_RetriesMessage(t *testing.T) {
 
 		const maxAttempts = 3
 
+		kafkaCfg := config.KafkaConfig{
+			Brokers:                       kafkaBrokers,
+			ProcessedUpdatesTopic:         topic,
+			ProcessedUpdatesConsumerGroup: helpers.UniqueTopic(t, "consumer-group"),
+			DLQTopic:                      dlqTopic,
+			ConsumerMaxAttempts:           maxAttempts,
+			ConsumerBaseRetryDelay:        200 * time.Millisecond,
+			ConsumerMaxRetryDelay:         5 * time.Second,
+		}
+
 		var sendMessageCalls atomic.Int64
 
 		sendMessage := func(chatID int64, text string) error {
@@ -240,12 +264,8 @@ func TestBotKafkaReceiver_ProcessingError_RetriesMessage(t *testing.T) {
 			return nil
 		}
 
-		kafkaReceiver := receiver.NewKafkaReceiver(
-			kafkaBrokers,
-			topic,
-			helpers.UniqueTopic(t, "consumer-group"),
-			dlqTopic,
-			maxAttempts,
+		kafkaReceiver := receiver.NewBotKafkaReceiver(
+			kafkaCfg,
 			sendMessage,
 		)
 
@@ -298,6 +318,16 @@ func TestBotKafkaReceiver_ProcessingError_RetriesMessage(t *testing.T) {
 
 		const maxAttempts = 3
 
+		kafkaCfg := config.KafkaConfig{
+			Brokers:                       kafkaBrokers,
+			ProcessedUpdatesTopic:         topic,
+			ProcessedUpdatesConsumerGroup: helpers.UniqueTopic(t, "consumer-group"),
+			DLQTopic:                      dlqTopic,
+			ConsumerMaxAttempts:           maxAttempts,
+			ConsumerBaseRetryDelay:        200 * time.Millisecond,
+			ConsumerMaxRetryDelay:         5 * time.Second,
+		}
+
 		var sendMessageCalls atomic.Int64
 
 		sendMessage := func(chatID int64, text string) error {
@@ -305,12 +335,8 @@ func TestBotKafkaReceiver_ProcessingError_RetriesMessage(t *testing.T) {
 			return errors.New("permanent processing error")
 		}
 
-		kafkaReceiver := receiver.NewKafkaReceiver(
-			kafkaBrokers,
-			topic,
-			helpers.UniqueTopic(t, "consumer-group"),
-			dlqTopic,
-			maxAttempts,
+		kafkaReceiver := receiver.NewBotKafkaReceiver(
+			kafkaCfg,
 			sendMessage,
 		)
 
@@ -340,7 +366,7 @@ func TestBotKafkaReceiver_ProcessingError_RetriesMessage(t *testing.T) {
 		writeLinkUpdate(t, topic, update)
 
 		//act
-		dlqKafkaMsg := helpers.ReadMessage(t, kafkaBrokers, dlqTopic)
+		dlqKafkaMsg := helpers.ReadMessageByKey(t, kafkaBrokers, dlqTopic, "201")
 
 		//assert
 		if sendMessageCalls.Load() != maxAttempts {
@@ -351,7 +377,7 @@ func TestBotKafkaReceiver_ProcessingError_RetriesMessage(t *testing.T) {
 			t.Errorf("unexpected dlq message key: got %q, want %q", string(dlqKafkaMsg.Key), "201")
 		}
 
-		var dlqMsg botkafka.DeadLetterMessage
+		var dlqMsg kafkainfra.DeadLetterMessage
 		if err := json.Unmarshal(dlqKafkaMsg.Value, &dlqMsg); err != nil {
 			t.Fatalf("unmarshal dlq message: %v", err)
 		}

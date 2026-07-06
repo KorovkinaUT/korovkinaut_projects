@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/integration_tests/helpers"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/service"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 	scrapperhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/scrapper"
 )
 
@@ -22,12 +24,25 @@ func TestScrapperHTTP_AddLink_PersistsEntitiesAndReturnsSavedData(t *testing.T) 
 
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		server := newScrapperTestServer(subscriptionService)
 		defer server.Close()
 
-		client := scrapperhttp.NewClient(server.URL, server.Client())
+		retryCfg := &config.RetryConfig{
+			Attempts:          3,
+			Delay:             200 * time.Millisecond,
+			RetryableStatuses: []int{500, 502, 503, 504},
+		}
+
+		cbCfg := &config.CircuitBreakerConfig{
+			SlidingWindowSize:       10,
+			FailureRateThreshold:    50,
+			CallsInHalfOpen:         5,
+			WaitDurationInOpenState: time.Second,
+		}
+
+		client := scrapperhttp.NewClient(server.URL, server.Client(), retryCfg, cbCfg)
 
 		const chatID int64 = 777
 		const trackedURL = "https://github.com/user/repo"
@@ -150,7 +165,7 @@ func TestScrapperHTTP_AddLink_PersistsEntitiesAndReturnsSavedData(t *testing.T) 
 	})
 }
 
-func newScrapperTestServer(subscriptions *service.SubscriptionService) *httptest.Server {
+func newScrapperTestServer(subscriptions service.SubscriptionService) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/tg-chat/", scrapperhttp.NewTgChatHandler(subscriptions))
 	mux.Handle("/links", scrapperhttp.NewLinksHandler(subscriptions))

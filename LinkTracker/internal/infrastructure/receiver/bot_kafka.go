@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 	botkafka "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/kafka/bot"
 )
 
@@ -11,21 +12,15 @@ type BotKafkaReceiver struct {
 	consumer *botkafka.Consumer
 }
 
-func NewKafkaReceiver(
-	brokers []string,
-	topic string,
-	groupID string,
-	dlqTopic string,
-	maxAttempts int,
+var _ MessageReceiver = (*BotKafkaReceiver)(nil)
+
+func NewBotKafkaReceiver(
+	cfg config.KafkaConfig,
 	sendMessage func(chatID int64, text string) error,
 ) *BotKafkaReceiver {
 	return &BotKafkaReceiver{
 		consumer: botkafka.NewConsumer(
-			brokers,
-			topic,
-			groupID,
-			dlqTopic,
-			maxAttempts,
+			cfg,
 			sendMessage,
 		),
 	}

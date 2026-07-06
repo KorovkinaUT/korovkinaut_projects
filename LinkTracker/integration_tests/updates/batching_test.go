@@ -13,11 +13,10 @@ import (
 	"time"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/integration_tests/helpers"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/sender"
 	appupdates "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/updates"
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
-	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 	githubhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/github"
-	httpsender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/sender"
 )
 
 func TestChecker_BatchProcessing_ProcessesAllBatches(t *testing.T) {
@@ -29,7 +28,7 @@ func TestChecker_BatchProcessing_ProcessesAllBatches(t *testing.T) {
 		defer db.Close(t)
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 501
 
@@ -95,14 +94,11 @@ func TestChecker_BatchProcessing_ProcessesAllBatches(t *testing.T) {
 		githubServer := newGitHubBatchServer(t, githubResponses, nil)
 		defer githubServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		githubClient := githubhttp.NewClient(githubServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		githubClient := githubhttp.NewClient(githubServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -110,12 +106,9 @@ func TestChecker_BatchProcessing_ProcessesAllBatches(t *testing.T) {
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewGitHubClient(githubClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.GitHubFormatter{},
 			},
 		)
 
@@ -127,28 +120,62 @@ func TestChecker_BatchProcessing_ProcessesAllBatches(t *testing.T) {
 			t.Fatalf("checker returned error: %v", err)
 		}
 
-		if len(*receivedUpdates) != len(urls) {
-			t.Fatalf("unexpected sent updates count: got %d, want %d", len(*receivedUpdates), len(urls))
+		if len(rawSender.updates) != len(urls) {
+			t.Fatalf("unexpected sent updates count: got %d, want %d", len(rawSender.updates), len(urls))
 		}
 
-		gotByURL := make(map[string]bothttp.LinkUpdate, len(*receivedUpdates))
-		for _, update := range *receivedUpdates {
+		if len(rawSender.problems) != 0 {
+			t.Errorf("unexpected problem batches count: got %d, want 0", len(rawSender.problems))
+		}
+
+		gotByURL := make(map[string]sender.RawUpdateEvents, len(rawSender.updates))
+		for _, update := range rawSender.updates {
 			gotByURL[update.URL] = update
 		}
 
+		expectedTitles := map[string]string{
+			"https://github.com/user/repo-one":   "Issue one",
+			"https://github.com/user/repo-two":   "Issue two",
+			"https://github.com/user/repo-three": "Issue three",
+		}
+		expectedAuthors := map[string]string{
+			"https://github.com/user/repo-one":   "alice",
+			"https://github.com/user/repo-two":   "bob",
+			"https://github.com/user/repo-three": "carol",
+		}
+
 		for _, url := range urls {
-			update, ok := gotByURL[url]
+			updateMsg, ok := gotByURL[url]
 			if !ok {
-				t.Errorf("expected update for url %q", url)
+				t.Errorf("expected raw update for url %q", url)
 				continue
 			}
 
-			if len(update.TgChatIDs) != 1 || update.TgChatIDs[0] != chatID {
-				t.Errorf("unexpected chat ids for url %q: got %v, want [%d]", url, update.TgChatIDs, chatID)
+			if len(updateMsg.TgChatIDs) != 1 || updateMsg.TgChatIDs[0] != chatID {
+				t.Errorf("unexpected chat ids for url %q: got %v, want [%d]", url, updateMsg.TgChatIDs, chatID)
 			}
 
-			if !strings.Contains(update.Description, url) {
-				t.Errorf("update description must mention url %q, got %q", url, update.Description)
+			if len(updateMsg.Events) != 1 {
+				t.Errorf("unexpected events count for url %q: got %d, want 1", url, len(updateMsg.Events))
+				continue
+			}
+
+			event := updateMsg.Events[0]
+
+			if event.Source != string(schedulerlink.TypeGitHub) {
+				t.Errorf("unexpected event source for url %q: got %q, want %q", url, event.Source, string(schedulerlink.TypeGitHub))
+			}
+
+			if event.Type != "issue" {
+				t.Errorf("unexpected event type for url %q: got %q, want %q", url, event.Type, "issue")
+			}
+
+			if event.Title != expectedTitles[url] {
+				t.Errorf("unexpected event title for url %q: got %q, want %q", url, event.Title, expectedTitles[url])
+			}
+
+			if event.Author != expectedAuthors[url] {
+				t.Errorf("unexpected event author for url %q: got %q, want %q", url, event.Author, expectedAuthors[url])
 			}
 		}
 
@@ -180,7 +207,7 @@ func TestChecker_BatchProcessing_PartialFailureDoesNotStopOtherLinks(t *testing.
 		defer db.Close(t)
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 502
 
@@ -240,14 +267,11 @@ func TestChecker_BatchProcessing_PartialFailureDoesNotStopOtherLinks(t *testing.
 		githubServer := newGitHubBatchServer(t, githubResponses, failingPaths)
 		defer githubServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		githubClient := githubhttp.NewClient(githubServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		githubClient := githubhttp.NewClient(githubServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -255,12 +279,9 @@ func TestChecker_BatchProcessing_PartialFailureDoesNotStopOtherLinks(t *testing.
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewGitHubClient(githubClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.GitHubFormatter{},
 			},
 		)
 
@@ -272,35 +293,34 @@ func TestChecker_BatchProcessing_PartialFailureDoesNotStopOtherLinks(t *testing.
 			t.Fatalf("checker returned error: %v", err)
 		}
 
-		if len(*receivedUpdates) != 3 {
-			t.Fatalf("unexpected sent messages count: got %d, want 3", len(*receivedUpdates))
+		if len(rawSender.updates) != 2 {
+			t.Fatalf("unexpected successful raw updates count: got %d, want 2", len(rawSender.updates))
 		}
 
-		var normalUpdates []bothttp.LinkUpdate
-		var problemUpdates []bothttp.LinkUpdate
+		if len(rawSender.problems) != 1 {
+			t.Fatalf("unexpected problem batches count: got %d, want 1", len(rawSender.problems))
+		}
 
-		for _, update := range *receivedUpdates {
-			if update.URL == "problems" {
-				problemUpdates = append(problemUpdates, update)
+		gotSuccessURLs := make([]string, 0, len(rawSender.updates))
+		for _, updateMsg := range rawSender.updates {
+			gotSuccessURLs = append(gotSuccessURLs, updateMsg.URL)
+
+			if len(updateMsg.TgChatIDs) != 1 || updateMsg.TgChatIDs[0] != chatID {
+				t.Errorf("unexpected chat ids for successful update %q: got %v, want [%d]", updateMsg.URL, updateMsg.TgChatIDs, chatID)
+			}
+
+			if len(updateMsg.Events) != 1 {
+				t.Errorf("unexpected events count for update %q: got %d, want 1", updateMsg.URL, len(updateMsg.Events))
 				continue
 			}
-			normalUpdates = append(normalUpdates, update)
-		}
 
-		if len(normalUpdates) != 2 {
-			t.Errorf("unexpected successful updates count: got %d, want 2", len(normalUpdates))
-		}
+			event := updateMsg.Events[0]
+			if event.Source != string(schedulerlink.TypeGitHub) {
+				t.Errorf("unexpected event source for url %q: got %q, want %q", updateMsg.URL, event.Source, string(schedulerlink.TypeGitHub))
+			}
 
-		if len(problemUpdates) != 1 {
-			t.Errorf("unexpected problem updates count: got %d, want 1", len(problemUpdates))
-		}
-
-		gotSuccessURLs := make([]string, 0, len(normalUpdates))
-		for _, update := range normalUpdates {
-			gotSuccessURLs = append(gotSuccessURLs, update.URL)
-
-			if len(update.TgChatIDs) != 1 || update.TgChatIDs[0] != chatID {
-				t.Errorf("unexpected chat ids for successful update %q: got %v, want [%d]", update.URL, update.TgChatIDs, chatID)
+			if event.Type != "issue" {
+				t.Errorf("unexpected event type for url %q: got %q, want %q", updateMsg.URL, event.Type, "issue")
 			}
 		}
 
@@ -311,20 +331,23 @@ func TestChecker_BatchProcessing_PartialFailureDoesNotStopOtherLinks(t *testing.
 			t.Errorf("unexpected successful urls: got %v, want %v", gotSuccessURLs, wantSuccessURLs)
 		}
 
-		if len(problemUpdates) == 1 {
-			problem := problemUpdates[0]
+		problems := rawSender.problems[0]
+		if len(problems) != 1 {
+			t.Fatalf("unexpected problems count: got %d, want 1", len(problems))
+		}
 
-			if len(problem.TgChatIDs) != 1 || problem.TgChatIDs[0] != chatID {
-				t.Errorf("unexpected chat ids for problem update: got %v, want [%d]", problem.TgChatIDs, chatID)
-			}
+		problem := problems[0]
 
-			if !strings.Contains(problem.Description, failedURL) {
-				t.Errorf("problem message must mention failed url, got %q", problem.Description)
-			}
+		if problem.URL != failedURL {
+			t.Errorf("unexpected problem url: got %q, want %q", problem.URL, failedURL)
+		}
 
-			if !strings.Contains(strings.ToLower(problem.Description), "unexpected status") {
-				t.Errorf("problem message must contain failure reason, got %q", problem.Description)
-			}
+		if len(problem.ChatIDs) != 1 || problem.ChatIDs[0] != chatID {
+			t.Errorf("unexpected chat ids for problem: got %v, want [%d]", problem.ChatIDs, chatID)
+		}
+
+		if !strings.Contains(strings.ToLower(problem.Message), "unexpected status") {
+			t.Errorf("problem message must contain failure reason, got %q", problem.Message)
 		}
 
 		trackedURLs, err := subscriptionService.ListTrackedURLsAll(ctx)

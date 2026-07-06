@@ -18,7 +18,6 @@ import (
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
 	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
 	githubhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/github"
-	httpsender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/sender"
 )
 
 func TestChecker_GitHubIssue_SendsFormattedUpdate(t *testing.T) {
@@ -31,7 +30,7 @@ func TestChecker_GitHubIssue_SendsFormattedUpdate(t *testing.T) {
 
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 101
 		const trackedURL = "https://github.com/user/repo"
@@ -67,14 +66,11 @@ func TestChecker_GitHubIssue_SendsFormattedUpdate(t *testing.T) {
 		})
 		defer githubServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		githubClient := githubhttp.NewClient(githubServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		githubClient := githubhttp.NewClient(githubServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -82,12 +78,9 @@ func TestChecker_GitHubIssue_SendsFormattedUpdate(t *testing.T) {
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewGitHubClient(githubClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.GitHubFormatter{},
 			},
 		)
 
@@ -101,43 +94,53 @@ func TestChecker_GitHubIssue_SendsFormattedUpdate(t *testing.T) {
 			t.Fatalf("checker returned error: %v", err)
 		}
 
-		if len(*receivedUpdates) != 1 {
-			t.Fatalf("unexpected sent updates count: got %d, want 1", len(*receivedUpdates))
+		if len(rawSender.problems) != 0 {
+			t.Errorf("unexpected problem batches count: got %d, want 0", len(rawSender.problems))
 		}
 
-		update := (*receivedUpdates)[0]
-
-		if update.URL != trackedURL {
-			t.Errorf("unexpected update url: got %q, want %q", update.URL, trackedURL)
+		if len(rawSender.updates) != 1 {
+			t.Fatalf("unexpected sent raw updates count: got %d, want 1", len(rawSender.updates))
 		}
 
-		slices.Sort(update.TgChatIDs)
-		if !slices.Equal(update.TgChatIDs, []int64{chatID}) {
-			t.Errorf("unexpected chat ids: got %v, want [%d]", update.TgChatIDs, chatID)
+		updateMsg := rawSender.updates[0]
+
+		if updateMsg.URL != trackedURL {
+			t.Errorf("unexpected update url: got %q, want %q", updateMsg.URL, trackedURL)
 		}
 
-		if !strings.Contains(update.Description, trackedURL) {
-			t.Errorf("update description must mention tracked url, got %q", update.Description)
+		slices.Sort(updateMsg.TgChatIDs)
+		if !slices.Equal(updateMsg.TgChatIDs, []int64{chatID}) {
+			t.Errorf("unexpected chat ids: got %v, want [%d]", updateMsg.TgChatIDs, chatID)
 		}
 
-		if !strings.Contains(update.Description, "Issue") {
-			t.Errorf("update description must contain issue label, got %q", update.Description)
+		if len(updateMsg.Events) != 1 {
+			t.Fatalf("unexpected events count: got %d, want 1", len(updateMsg.Events))
 		}
 
-		if !strings.Contains(update.Description, "Fix race in checker") {
-			t.Errorf("update description must contain issue title, got %q", update.Description)
+		event := updateMsg.Events[0]
+
+		if event.Source != string(schedulerlink.TypeGitHub) {
+			t.Errorf("unexpected event source: got %q, want %q", event.Source, string(schedulerlink.TypeGitHub))
 		}
 
-		if !strings.Contains(update.Description, "octocat") {
-			t.Errorf("update description must contain username, got %q", update.Description)
+		if event.Type != "issue" {
+			t.Errorf("unexpected event type: got %q, want %q", event.Type, "issue")
 		}
 
-		if !strings.Contains(update.Description, "02 Apr 2026 11:30") {
-			t.Errorf("update description must contain formatted creation time, got %q", update.Description)
+		if event.Title != "Fix race in checker" {
+			t.Errorf("unexpected event title: got %q, want %q", event.Title, "Fix race in checker")
 		}
 
-		if !strings.Contains(update.Description, expectedPreview) {
-			t.Errorf("update description must contain trimmed preview, got %q", update.Description)
+		if event.Author != "octocat" {
+			t.Errorf("unexpected event author: got %q, want %q", event.Author, "octocat")
+		}
+
+		if !event.CreationTime.Equal(createdAt) {
+			t.Errorf("unexpected event creation time: got %v, want %v", event.CreationTime, createdAt)
+		}
+
+		if event.Preview != expectedPreview {
+			t.Errorf("unexpected event preview: got %q, want %q", event.Preview, expectedPreview)
 		}
 	})
 }
@@ -152,7 +155,7 @@ func TestChecker_GitHubPullRequest_SendsFormattedUpdate(t *testing.T) {
 
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 202
 		const trackedURL = "https://github.com/user/repo"
@@ -189,14 +192,11 @@ func TestChecker_GitHubPullRequest_SendsFormattedUpdate(t *testing.T) {
 		})
 		defer githubServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		githubClient := githubhttp.NewClient(githubServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		githubClient := githubhttp.NewClient(githubServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -204,12 +204,9 @@ func TestChecker_GitHubPullRequest_SendsFormattedUpdate(t *testing.T) {
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewGitHubClient(githubClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.GitHubFormatter{},
 			},
 		)
 
@@ -223,43 +220,53 @@ func TestChecker_GitHubPullRequest_SendsFormattedUpdate(t *testing.T) {
 			t.Fatalf("checker returned error: %v", err)
 		}
 
-		if len(*receivedUpdates) != 1 {
-			t.Fatalf("unexpected sent updates count: got %d, want 1", len(*receivedUpdates))
+		if len(rawSender.problems) != 0 {
+			t.Errorf("unexpected problem batches count: got %d, want 0", len(rawSender.problems))
 		}
 
-		update := (*receivedUpdates)[0]
-
-		if update.URL != trackedURL {
-			t.Errorf("unexpected update url: got %q, want %q", update.URL, trackedURL)
+		if len(rawSender.updates) != 1 {
+			t.Fatalf("unexpected sent raw updates count: got %d, want 1", len(rawSender.updates))
 		}
 
-		slices.Sort(update.TgChatIDs)
-		if !slices.Equal(update.TgChatIDs, []int64{chatID}) {
-			t.Errorf("unexpected chat ids: got %v, want [%d]", update.TgChatIDs, chatID)
+		updateMsg := rawSender.updates[0]
+
+		if updateMsg.URL != trackedURL {
+			t.Errorf("unexpected update url: got %q, want %q", updateMsg.URL, trackedURL)
 		}
 
-		if !strings.Contains(update.Description, trackedURL) {
-			t.Errorf("update description must mention tracked url, got %q", update.Description)
+		slices.Sort(updateMsg.TgChatIDs)
+		if !slices.Equal(updateMsg.TgChatIDs, []int64{chatID}) {
+			t.Errorf("unexpected chat ids: got %v, want [%d]", updateMsg.TgChatIDs, chatID)
 		}
 
-		if !strings.Contains(update.Description, "Pull Request") {
-			t.Errorf("update description must contain pull request label, got %q", update.Description)
+		if len(updateMsg.Events) != 1 {
+			t.Fatalf("unexpected events count: got %d, want 1", len(updateMsg.Events))
 		}
 
-		if !strings.Contains(update.Description, "Add batch processing") {
-			t.Errorf("update description must contain pull request title, got %q", update.Description)
+		event := updateMsg.Events[0]
+
+		if event.Source != string(schedulerlink.TypeGitHub) {
+			t.Errorf("unexpected event source: got %q, want %q", event.Source, string(schedulerlink.TypeGitHub))
 		}
 
-		if !strings.Contains(update.Description, "alice") {
-			t.Errorf("update description must contain username, got %q", update.Description)
+		if event.Type != "pull_request" {
+			t.Errorf("unexpected event type: got %q, want %q", event.Type, "pull_request")
 		}
 
-		if !strings.Contains(update.Description, "03 Apr 2026 09:45") {
-			t.Errorf("update description must contain formatted creation time, got %q", update.Description)
+		if event.Title != "Add batch processing" {
+			t.Errorf("unexpected event title: got %q, want %q", event.Title, "Add batch processing")
 		}
 
-		if !strings.Contains(update.Description, expectedPreview) {
-			t.Errorf("update description must contain trimmed preview, got %q", update.Description)
+		if event.Author != "alice" {
+			t.Errorf("unexpected event author: got %q, want %q", event.Author, "alice")
+		}
+
+		if !event.CreationTime.Equal(createdAt) {
+			t.Errorf("unexpected event creation time: got %v, want %v", event.CreationTime, createdAt)
+		}
+
+		if event.Preview != expectedPreview {
+			t.Errorf("unexpected event preview: got %q, want %q", event.Preview, expectedPreview)
 		}
 	})
 }

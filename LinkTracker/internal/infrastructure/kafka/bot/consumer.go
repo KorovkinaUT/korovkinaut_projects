@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/segmentio/kafka-go"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	kafkainfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/kafka"
 )
 
 // to send to DLQ immediately
@@ -22,50 +25,39 @@ type LinkUpdate struct {
 	TgChatIDs   []int64 `json:"tgChatIds"`
 }
 
-// for DLQ
-type DeadLetterMessage struct {
-	OriginalTopic     string `json:"originalTopic"`
-	OriginalPartition int    `json:"originalPartition"`
-	OriginalOffset    int64  `json:"originalOffset"`
-	Key               string `json:"key"`
-	Value             string `json:"value"`
-	Error             string `json:"error"`
-}
-
 // Consumer reads link update notifications from Kafka and sends them to Telegram chats
 type Consumer struct {
 	reader      *kafka.Reader
 	dlqWriter   *kafka.Writer
 	dlqTopic    string
 	maxAttempts int
+	retryDelay  time.Duration
+	maxDelay    time.Duration
 	sendMessage func(chatID int64, text string) error
 }
 
 func NewConsumer(
-	brokers []string,
-	topic string,
-	groupID string,
-	dlqTopic string,
-	maxAttempts int,
+	cfg config.KafkaConfig,
 	sendMessage func(chatID int64, text string) error,
 ) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers: brokers,
-			Topic:   topic,
-			GroupID: groupID,
+			Brokers: cfg.Brokers,
+			Topic:   cfg.ProcessedUpdatesTopic,
+			GroupID: cfg.ProcessedUpdatesConsumerGroup,
 		}),
 		dlqWriter: &kafka.Writer{
-			Addr:     kafka.TCP(brokers...),
-			Topic:    dlqTopic,
+			Addr:     kafka.TCP(cfg.Brokers...),
+			Topic:    cfg.DLQTopic,
 			Balancer: &kafka.Hash{},
 		},
-		dlqTopic:    dlqTopic,
-		maxAttempts: maxAttempts,
+		dlqTopic:    cfg.DLQTopic,
+		maxAttempts: cfg.ConsumerMaxAttempts,
+		retryDelay:  cfg.ConsumerBaseRetryDelay,
+		maxDelay:    cfg.ConsumerMaxRetryDelay,
 		sendMessage: sendMessage,
 	}
 }
-
 func (c *Consumer) Start(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("starting kafka consumer")
 
@@ -142,6 +134,17 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, logger *slog.Logg
 
 			return nil
 		}
+
+		if attempt != c.maxAttempts-1 {
+			timer := time.NewTimer(min(c.maxDelay, c.retryDelay*time.Duration(1<<attempt)))
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
 
 	logger.Error(
@@ -161,7 +164,7 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, logger *slog.Logg
 }
 
 func (c *Consumer) sendToDLQ(ctx context.Context, kafkaMsg kafka.Message, cause error) error {
-	msg := DeadLetterMessage{
+	msg := kafkainfra.DeadLetterMessage{
 		OriginalTopic:     kafkaMsg.Topic,
 		OriginalPartition: kafkaMsg.Partition,
 		OriginalOffset:    kafkaMsg.Offset,

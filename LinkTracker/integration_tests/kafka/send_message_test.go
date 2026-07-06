@@ -9,6 +9,7 @@ import (
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/integration_tests/helpers"
 	appsender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/sender"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/receiver"
 	infrasender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/sender"
 )
@@ -19,6 +20,18 @@ func TestSending_ToBotKafkaReceiver_DeliversMessageToUser(t *testing.T) {
 	dlqTopic := helpers.UniqueTopic(t, "link-tracker-dlq")
 	helpers.CreateTopic(t, kafkaBrokers, topic)
 	helpers.CreateTopic(t, kafkaBrokers, dlqTopic)
+
+	kafkaCfg := config.KafkaConfig{
+		Brokers: kafkaBrokers,
+
+		ProcessedUpdatesTopic:         topic,
+		ProcessedUpdatesConsumerGroup: helpers.UniqueTopic(t, "consumer-group"),
+
+		DLQTopic:               dlqTopic,
+		ConsumerMaxAttempts:    3,
+		ConsumerBaseRetryDelay: 200 * time.Millisecond,
+		ConsumerMaxRetryDelay:  5 * time.Second,
+	}
 
 	const (
 		updateID = int64(300)
@@ -43,12 +56,8 @@ func TestSending_ToBotKafkaReceiver_DeliversMessageToUser(t *testing.T) {
 		return nil
 	}
 
-	kafkaReceiver := receiver.NewKafkaReceiver(
-		kafkaBrokers,
-		topic,
-		helpers.UniqueTopic(t, "consumer-group"),
-		dlqTopic,
-		3,
+	kafkaReceiver := receiver.NewBotKafkaReceiver(
+		kafkaCfg,
 		sendMessage,
 	)
 
@@ -68,7 +77,7 @@ func TestSending_ToBotKafkaReceiver_DeliversMessageToUser(t *testing.T) {
 		}
 	}()
 
-	kafkaSender := infrasender.NewKafkaSender(kafkaBrokers, topic)
+	kafkaSender := infrasender.NewBotKafkaSender(kafkaBrokers, topic)
 	defer func() {
 		if err := kafkaSender.Close(); err != nil {
 			t.Errorf("close kafka sender: %v", err)

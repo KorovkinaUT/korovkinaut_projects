@@ -7,16 +7,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/integration_tests/helpers"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/sender"
 	appupdates "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/updates"
 	schedulerlink "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/scheduler_link"
-	bothttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/bot"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
 	githubhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/github"
 	stackoverflowhttp "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http/stackoverflow"
-	httpsender "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/sender"
 )
 
 func TestChecker_GitHubUnavailable_DoesNotCrashAndSendsProblemMessage(t *testing.T) {
@@ -28,7 +29,7 @@ func TestChecker_GitHubUnavailable_DoesNotCrashAndSendsProblemMessage(t *testing
 		defer db.Close(t)
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 401
 		const trackedURL = "https://github.com/user/repo"
@@ -53,14 +54,11 @@ func TestChecker_GitHubUnavailable_DoesNotCrashAndSendsProblemMessage(t *testing
 		}))
 		defer githubServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		githubClient := githubhttp.NewClient(githubServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		githubClient := githubhttp.NewClient(githubServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -68,12 +66,9 @@ func TestChecker_GitHubUnavailable_DoesNotCrashAndSendsProblemMessage(t *testing
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewGitHubClient(githubClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.GitHubFormatter{},
 			},
 		)
 
@@ -85,22 +80,31 @@ func TestChecker_GitHubUnavailable_DoesNotCrashAndSendsProblemMessage(t *testing
 			t.Errorf("checker must not crash on github unavailability: %v", err)
 		}
 
-		if len(*receivedUpdates) != 1 {
-			t.Fatalf("unexpected sent messages count: got %d, want 1", len(*receivedUpdates))
+		if len(rawSender.updates) != 0 {
+			t.Errorf("unexpected raw updates count: got %d, want 0", len(rawSender.updates))
 		}
 
-		msg := (*receivedUpdates)[0]
-
-		if len(msg.TgChatIDs) != 1 || msg.TgChatIDs[0] != chatID {
-			t.Errorf("unexpected chat ids in problem message: got %v, want [%d]", msg.TgChatIDs, chatID)
+		if len(rawSender.problems) != 1 {
+			t.Fatalf("unexpected problem batches count: got %d, want 1", len(rawSender.problems))
 		}
 
-		if !strings.Contains(msg.Description, trackedURL) {
-			t.Errorf("problem message must mention tracked url, got %q", msg.Description)
+		problems := rawSender.problems[0]
+		if len(problems) != 1 {
+			t.Fatalf("unexpected problems count: got %d, want 1", len(problems))
 		}
 
-		if !strings.Contains(strings.ToLower(msg.Description), "unexpected status") {
-			t.Errorf("problem message must mention request failure reason, got %q", msg.Description)
+		problem := problems[0]
+
+		if problem.URL != trackedURL {
+			t.Errorf("unexpected problem url: got %q, want %q", problem.URL, trackedURL)
+		}
+
+		if len(problem.ChatIDs) != 1 || problem.ChatIDs[0] != chatID {
+			t.Errorf("unexpected chat ids in problem: got %v, want [%d]", problem.ChatIDs, chatID)
+		}
+
+		if !strings.Contains(strings.ToLower(problem.Message), "unexpected status") {
+			t.Errorf("problem must mention request failure reason, got %q", problem.Message)
 		}
 	})
 }
@@ -114,7 +118,7 @@ func TestChecker_StackOverflowUnavailable_DoesNotCrashAndSendsProblemMessage(t *
 		defer db.Close(t)
 		helpers.ApplyMigrations(t, db)
 
-		subscriptionService := helpers.NewTestSubscriptionService(t, db)
+		subscriptionService := helpers.NewTestBaseSubscriptionService(t, db)
 
 		const chatID int64 = 402
 		const trackedURL = "https://stackoverflow.com/questions/123/test"
@@ -139,14 +143,11 @@ func TestChecker_StackOverflowUnavailable_DoesNotCrashAndSendsProblemMessage(t *
 		}))
 		defer stackServer.Close()
 
-		receivedUpdates, botServer := newBotServer(t)
-		defer botServer.Close()
-
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 
-		stackClient := stackoverflowhttp.NewClient(stackServer.URL, httpClient)
-		botClient := bothttp.NewClient(botServer.URL, httpClient)
+		stackClient := stackoverflowhttp.NewClient(stackServer.URL, httpClient, testRetryConfig(), testCircuitBreakerConfig())
+		rawSender := newRawUpdateSenderStub()
 
 		checker := appupdates.NewChecker(
 			logger,
@@ -154,12 +155,9 @@ func TestChecker_StackOverflowUnavailable_DoesNotCrashAndSendsProblemMessage(t *
 			1,
 			subscriptionService,
 			schedulerlink.NewService(),
-			httpsender.NewHTTPSender(botClient),
+			rawSender,
 			[]appupdates.LinkClient{
 				appupdates.NewStackOverflowClient(stackClient),
-			},
-			[]appupdates.Formatter{
-				appupdates.StackOverflowFormatter{},
 			},
 		)
 
@@ -171,22 +169,77 @@ func TestChecker_StackOverflowUnavailable_DoesNotCrashAndSendsProblemMessage(t *
 			t.Errorf("checker must not crash on stackoverflow unavailability: %v", err)
 		}
 
-		if len(*receivedUpdates) != 1 {
-			t.Fatalf("unexpected sent messages count: got %d, want 1", len(*receivedUpdates))
+		if len(rawSender.updates) != 0 {
+			t.Errorf("unexpected raw updates count: got %d, want 0", len(rawSender.updates))
 		}
 
-		msg := (*receivedUpdates)[0]
-
-		if len(msg.TgChatIDs) != 1 || msg.TgChatIDs[0] != chatID {
-			t.Errorf("unexpected chat ids in problem message: got %v, want [%d]", msg.TgChatIDs, chatID)
+		if len(rawSender.problems) != 1 {
+			t.Fatalf("unexpected problem batches count: got %d, want 1", len(rawSender.problems))
 		}
 
-		if !strings.Contains(msg.Description, trackedURL) {
-			t.Errorf("problem message must mention tracked url, got %q", msg.Description)
+		problems := rawSender.problems[0]
+		if len(problems) != 1 {
+			t.Fatalf("unexpected problems count: got %d, want 1", len(problems))
 		}
 
-		if !strings.Contains(strings.ToLower(msg.Description), "unexpected status") {
-			t.Errorf("problem message must mention request failure reason, got %q", msg.Description)
+		problem := problems[0]
+
+		if problem.URL != trackedURL {
+			t.Errorf("unexpected problem url: got %q, want %q", problem.URL, trackedURL)
+		}
+
+		if len(problem.ChatIDs) != 1 || problem.ChatIDs[0] != chatID {
+			t.Errorf("unexpected chat ids in problem: got %v, want [%d]", problem.ChatIDs, chatID)
+		}
+
+		if !strings.Contains(strings.ToLower(problem.Message), "unexpected status") {
+			t.Errorf("problem must mention request failure reason, got %q", problem.Message)
 		}
 	})
+}
+
+func testRetryConfig() *config.RetryConfig {
+	return &config.RetryConfig{
+		Attempts:          1,
+		Delay:             time.Millisecond,
+		RetryableStatuses: []int{},
+	}
+}
+
+func testCircuitBreakerConfig() *config.CircuitBreakerConfig {
+	return &config.CircuitBreakerConfig{
+		SlidingWindowSize:       1000,
+		FailureRateThreshold:    100,
+		CallsInHalfOpen:         1,
+		WaitDurationInOpenState: time.Millisecond,
+	}
+}
+
+type rawUpdateSenderStub struct {
+	mu       sync.Mutex
+	updates  []sender.RawUpdateEvents
+	problems [][]sender.Problem
+}
+
+func newRawUpdateSenderStub() *rawUpdateSenderStub {
+	return &rawUpdateSenderStub{
+		updates:  make([]sender.RawUpdateEvents, 0),
+		problems: make([][]sender.Problem, 0),
+	}
+}
+
+func (s *rawUpdateSenderStub) SendUpdateEvents(ctx context.Context, msg sender.RawUpdateEvents) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.updates = append(s.updates, msg)
+	return nil
+}
+
+func (s *rawUpdateSenderStub) SendProblems(ctx context.Context, msg []sender.Problem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.problems = append(s.problems, msg)
+	return nil
 }

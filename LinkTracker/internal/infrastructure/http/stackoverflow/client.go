@@ -11,7 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/avast/retry-go"
+	"github.com/sony/gobreaker"
+
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain/update"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	httpinfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http"
 )
 
 const previewLimit = 200
@@ -21,8 +26,10 @@ var htmlTagRegexp = regexp.MustCompile(`<[^>]*>`)
 
 // Client for StackOverflow updates requests
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL        string
+	httpClient     *http.Client
+	retryCfg       *config.RetryConfig
+	circuitBreaker *gobreaker.CircuitBreaker
 }
 
 type QuestionsResponse struct {
@@ -59,10 +66,17 @@ type CommentResponse struct {
 	Owner        OwnerResponse `json:"owner"`
 }
 
-func NewClient(baseURL string, httpClient *http.Client) *Client {
+func NewClient(
+	baseURL string,
+	httpClient *http.Client,
+	retryCfg *config.RetryConfig,
+	cbCfg *config.CircuitBreakerConfig,
+) *Client {
 	return &Client{
-		baseURL:    baseURL,
-		httpClient: httpClient,
+		baseURL:        baseURL,
+		httpClient:     httpClient,
+		retryCfg:       retryCfg,
+		circuitBreaker: httpinfra.NewCircuitBreaker("stackoverflow-http-client", cbCfg),
 	}
 }
 
@@ -94,6 +108,36 @@ func (c *Client) GetQuestionEvents(
 }
 
 func (c *Client) getQuestionTitle(ctx context.Context, questionID int64) (string, error) {
+	var result string
+
+	_, err := c.circuitBreaker.Execute(func() (any, error) {
+		err := retry.Do(
+			func() error {
+				title, err := c.getQuestionTitleOnce(ctx, questionID)
+				if err != nil {
+					return err
+				}
+
+				result = title
+
+				return nil
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+
+		return nil, err
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return result, nil
+}
+
+func (c *Client) getQuestionTitleOnce(ctx context.Context, questionID int64) (string, error) {
 	params := url.Values{}
 	params.Set("site", "stackoverflow")
 
@@ -106,26 +150,30 @@ func (c *Client) getQuestionTitle(ctx context.Context, questionID int64) (string
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", fmt.Errorf("build stackoverflow question request: %w", err)
+		return "", retry.Unrecoverable(fmt.Errorf("build stackoverflow question request: %w", err))
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("send stackoverflow question request: %w", err)
+		return "", retry.Unrecoverable(fmt.Errorf("send stackoverflow question request: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("stackoverflow returned unexpected status: %s", resp.Status)
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return "", fmt.Errorf("stackoverflow returned retryable status: %s", resp.Status)
+		}
+
+		return "", retry.Unrecoverable(fmt.Errorf("stackoverflow returned unexpected status: %s", resp.Status))
 	}
 
 	var questions QuestionsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&questions); err != nil {
-		return "", fmt.Errorf("decode stackoverflow question response: %w", err)
+		return "", retry.Unrecoverable(fmt.Errorf("decode stackoverflow question response: %w", err))
 	}
 
 	if len(questions.Items) == 0 {
-		return "", fmt.Errorf("stackoverflow question not found")
+		return "", retry.Unrecoverable(fmt.Errorf("stackoverflow question not found"))
 	}
 
 	return questions.Items[0].Title, nil
@@ -158,27 +206,10 @@ func (c *Client) getAnswerEvents(
 			params.Encode(),
 		)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		answers, err := c.getAnswersPage(ctx, endpoint)
 		if err != nil {
-			return nil, fmt.Errorf("build stackoverflow answer request: %w", err)
+			return nil, err
 		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("send stackoverflow answer request: %w", err)
-		}
-
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			resp.Body.Close()
-			return nil, fmt.Errorf("stackoverflow returned unexpected status: %s", resp.Status)
-		}
-
-		var answers AnswersResponse
-		if err := json.NewDecoder(resp.Body).Decode(&answers); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("decode stackoverflow answers response: %w", err)
-		}
-		resp.Body.Close()
 
 		for _, answer := range answers.Items {
 			events = append(events, update.StackOverflowEvent{
@@ -198,6 +229,64 @@ func (c *Client) getAnswerEvents(
 	}
 
 	return events, nil
+}
+
+func (c *Client) getAnswersPage(ctx context.Context, endpoint string) (AnswersResponse, error) {
+	var result AnswersResponse
+
+	_, err := c.circuitBreaker.Execute(func() (any, error) {
+		err := retry.Do(
+			func() error {
+				answers, err := c.getAnswersPageOnce(ctx, endpoint)
+				if err != nil {
+					return err
+				}
+
+				result = answers
+
+				return nil
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+
+		return nil, err
+	})
+	if err != nil {
+		return AnswersResponse{}, err
+	}
+
+	return result, nil
+}
+
+func (c *Client) getAnswersPageOnce(ctx context.Context, endpoint string) (AnswersResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return AnswersResponse{}, retry.Unrecoverable(fmt.Errorf("build stackoverflow answer request: %w", err))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return AnswersResponse{}, retry.Unrecoverable(fmt.Errorf("send stackoverflow answer request: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return AnswersResponse{}, fmt.Errorf("stackoverflow returned retryable status: %s", resp.Status)
+		}
+
+		return AnswersResponse{}, retry.Unrecoverable(fmt.Errorf("stackoverflow returned unexpected status: %s", resp.Status))
+	}
+
+	var answers AnswersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&answers); err != nil {
+		return AnswersResponse{}, retry.Unrecoverable(fmt.Errorf("decode stackoverflow answers response: %w", err))
+	}
+
+	return answers, nil
 }
 
 func (c *Client) getCommentEvents(
@@ -227,27 +316,10 @@ func (c *Client) getCommentEvents(
 			params.Encode(),
 		)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		comments, err := c.getCommentsPage(ctx, endpoint)
 		if err != nil {
-			return nil, fmt.Errorf("build stackoverflow comment request: %w", err)
+			return nil, err
 		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("send stackoverflow comment request: %w", err)
-		}
-
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			resp.Body.Close()
-			return nil, fmt.Errorf("stackoverflow returned unexpected status: %s", resp.Status)
-		}
-
-		var comments CommentsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("decode stackoverflow comments response: %w", err)
-		}
-		resp.Body.Close()
 
 		for _, comment := range comments.Items {
 			events = append(events, update.StackOverflowEvent{
@@ -267,6 +339,64 @@ func (c *Client) getCommentEvents(
 	}
 
 	return events, nil
+}
+
+func (c *Client) getCommentsPage(ctx context.Context, endpoint string) (CommentsResponse, error) {
+	var result CommentsResponse
+
+	_, err := c.circuitBreaker.Execute(func() (any, error) {
+		err := retry.Do(
+			func() error {
+				comments, err := c.getCommentsPageOnce(ctx, endpoint)
+				if err != nil {
+					return err
+				}
+
+				result = comments
+
+				return nil
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+
+		return nil, err
+	})
+	if err != nil {
+		return CommentsResponse{}, err
+	}
+
+	return result, nil
+}
+
+func (c *Client) getCommentsPageOnce(ctx context.Context, endpoint string) (CommentsResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return CommentsResponse{}, retry.Unrecoverable(fmt.Errorf("build stackoverflow comment request: %w", err))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return CommentsResponse{}, retry.Unrecoverable(fmt.Errorf("send stackoverflow comment request: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return CommentsResponse{}, fmt.Errorf("stackoverflow returned retryable status: %s", resp.Status)
+		}
+
+		return CommentsResponse{}, retry.Unrecoverable(fmt.Errorf("stackoverflow returned unexpected status: %s", resp.Status))
+	}
+
+	var comments CommentsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
+		return CommentsResponse{}, retry.Unrecoverable(fmt.Errorf("decode stackoverflow comments response: %w", err))
+	}
+
+	return comments, nil
 }
 
 func buildPreview(text string) string {

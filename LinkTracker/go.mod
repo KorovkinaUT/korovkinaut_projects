@@ -5,13 +5,18 @@ go 1.25.1
 require github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 
 require (
+	github.com/avast/retry-go v3.0.0+incompatible
 	github.com/doug-martin/goqu/v9 v9.19.0
 	github.com/go-co-op/gocron/v2 v2.19.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/segmentio/kafka-go v0.4.51
+	github.com/sony/gobreaker v1.0.0
 	github.com/testcontainers/testcontainers-go v0.41.0
+	github.com/testcontainers/testcontainers-go/modules/kafka v0.41.0
+	github.com/valkey-io/valkey-go v1.0.74
+	golang.org/x/time v0.12.0
 )
 
 require (
@@ -19,7 +24,6 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
-	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
@@ -64,9 +68,9 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/testcontainers/testcontainers-go/modules/kafka v0.41.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
+	github.com/valkey-io/valkey-go v1.0.74 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect

@@ -22,18 +22,22 @@ func NewMessageReceiver(
 ) (MessageReceiver, error) {
 	switch strings.ToUpper(transport) {
 	case "HTTP":
-		return NewHTTPReceiver(
+		httpReceiver := NewBotHTTPReceiver(
 			botCfg.BotAddress(),
+			botCfg.RateLimit,
 			sendMessage,
-		), nil
+		)
+
+		kafkaReceiver := NewBotKafkaReceiver(
+			*kafkaCfg,
+			sendMessage,
+		)
+
+		return NewCompositeReceiver(httpReceiver, kafkaReceiver), nil
 
 	case "KAFKA":
-		return NewKafkaReceiver(
-			kafkaCfg.Brokers,
-			kafkaCfg.UpdatesTopic,
-			kafkaCfg.UpdatesConsumerGroup,
-			kafkaCfg.DLQTopic,
-			kafkaCfg.ConsumerMaxAttempts,
+		return NewBotKafkaReceiver(
+			*kafkaCfg,
 			sendMessage,
 		), nil
 

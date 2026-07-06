@@ -8,33 +8,63 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/avast/retry-go"
+	"github.com/sony/gobreaker"
+
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/repository"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	httpinfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http"
 )
 
-// Client for processing scrapper server respones
+// Client for processing scrapper server responses
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL        string
+	httpClient     *http.Client
+	retryCfg       *config.RetryConfig
+	circuitBreaker *gobreaker.CircuitBreaker
 }
 
-func NewClient(baseURL string, httpClient *http.Client) *Client {
+func NewClient(
+	baseURL string,
+	httpClient *http.Client,
+	retryCfg *config.RetryConfig,
+	cbCfg *config.CircuitBreakerConfig,
+) *Client {
 	return &Client{
-		baseURL:    baseURL,
-		httpClient: httpClient,
+		baseURL:        baseURL,
+		httpClient:     httpClient,
+		retryCfg:       retryCfg,
+		circuitBreaker: httpinfra.NewCircuitBreaker("scrapper-http-client", cbCfg),
 	}
 }
 
 func (c *Client) RegisterChat(ctx context.Context, chatID int64) error {
+	_, err := c.circuitBreaker.Execute(func() (any, error) {
+		return nil, retry.Do(
+			func() error {
+				return c.registerChat(ctx, chatID)
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+	})
+
+	return err
+}
+
+func (c *Client) registerChat(ctx context.Context, chatID int64) error {
 	endpoint := fmt.Sprintf("%s/tg-chat/%d", c.baseURL, chatID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("build register chat request: %w", err)
+		return retry.Unrecoverable(fmt.Errorf("build register chat request: %w", err))
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("send register chat request: %w", err)
+		return retry.Unrecoverable(fmt.Errorf("send register chat request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -42,23 +72,43 @@ func (c *Client) RegisterChat(ctx context.Context, chatID int64) error {
 	case http.StatusOK:
 		return nil
 	case http.StatusConflict:
-		return repository.ErrChatAlreadyExists
+		return retry.Unrecoverable(repository.ErrChatAlreadyExists)
 	default:
-		return parseAPIError(resp)
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return fmt.Errorf("scrapper api returned retryable status: %s", resp.Status)
+		}
+
+		return retry.Unrecoverable(parseAPIError(resp))
 	}
 }
 
 func (c *Client) DeleteChat(ctx context.Context, chatID int64) error {
+	_, err := c.circuitBreaker.Execute(func() (any, error) {
+		return nil, retry.Do(
+			func() error {
+				return c.deleteChat(ctx, chatID)
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+	})
+
+	return err
+}
+
+func (c *Client) deleteChat(ctx context.Context, chatID int64) error {
 	endpoint := fmt.Sprintf("%s/tg-chat/%d", c.baseURL, chatID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("build delete chat request: %w", err)
+		return retry.Unrecoverable(fmt.Errorf("build delete chat request: %w", err))
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("send delete chat request: %w", err)
+		return retry.Unrecoverable(fmt.Errorf("send delete chat request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -66,25 +116,59 @@ func (c *Client) DeleteChat(ctx context.Context, chatID int64) error {
 	case http.StatusOK:
 		return nil
 	case http.StatusNotFound:
-		return repository.ErrChatNotFound
+		return retry.Unrecoverable(repository.ErrChatNotFound)
 	default:
-		return parseAPIError(resp)
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return fmt.Errorf("scrapper api returned retryable status: %s", resp.Status)
+		}
+
+		return retry.Unrecoverable(parseAPIError(resp))
 	}
 }
 
 func (c *Client) ListLinks(ctx context.Context, chatID int64) (ListLinksResponse, error) {
+	var result ListLinksResponse
+
+	_, err := c.circuitBreaker.Execute(func() (any, error) {
+		err := retry.Do(
+			func() error {
+				response, err := c.listLinks(ctx, chatID)
+				if err != nil {
+					return err
+				}
+
+				result = response
+
+				return nil
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+
+		return nil, err
+	})
+	if err != nil {
+		return ListLinksResponse{}, err
+	}
+
+	return result, nil
+}
+
+func (c *Client) listLinks(ctx context.Context, chatID int64) (ListLinksResponse, error) {
 	endpoint := fmt.Sprintf("%s/links", c.baseURL)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return ListLinksResponse{}, fmt.Errorf("build list links request: %w", err)
+		return ListLinksResponse{}, retry.Unrecoverable(fmt.Errorf("build list links request: %w", err))
 	}
 
 	req.Header.Set("Tg-Chat-Id", strconv.FormatInt(chatID, 10))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return ListLinksResponse{}, fmt.Errorf("send list links request: %w", err)
+		return ListLinksResponse{}, retry.Unrecoverable(fmt.Errorf("send list links request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -92,27 +176,62 @@ func (c *Client) ListLinks(ctx context.Context, chatID int64) (ListLinksResponse
 	case http.StatusOK:
 		var result ListLinksResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return ListLinksResponse{}, fmt.Errorf("decode list links response: %w", err)
+			return ListLinksResponse{}, retry.Unrecoverable(fmt.Errorf("decode list links response: %w", err))
 		}
+
 		return result, nil
 	case http.StatusNotFound:
-		return ListLinksResponse{}, repository.ErrChatNotFound
+		return ListLinksResponse{}, retry.Unrecoverable(repository.ErrChatNotFound)
 	default:
-		return ListLinksResponse{}, parseAPIError(resp)
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return ListLinksResponse{}, fmt.Errorf("scrapper api returned retryable status: %s", resp.Status)
+		}
+
+		return ListLinksResponse{}, retry.Unrecoverable(parseAPIError(resp))
 	}
 }
 
 func (c *Client) AddLink(ctx context.Context, chatID int64, request AddLinkRequest) (LinkResponse, error) {
-	endpoint := fmt.Sprintf("%s/links", c.baseURL)
-
 	body, err := json.Marshal(request)
 	if err != nil {
 		return LinkResponse{}, fmt.Errorf("marshal add link request: %w", err)
 	}
 
+	var result LinkResponse
+
+	_, err = c.circuitBreaker.Execute(func() (any, error) {
+		err := retry.Do(
+			func() error {
+				response, err := c.addLink(ctx, chatID, body)
+				if err != nil {
+					return err
+				}
+
+				result = response
+
+				return nil
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+
+		return nil, err
+	})
+	if err != nil {
+		return LinkResponse{}, err
+	}
+
+	return result, nil
+}
+
+func (c *Client) addLink(ctx context.Context, chatID int64, body []byte) (LinkResponse, error) {
+	endpoint := fmt.Sprintf("%s/links", c.baseURL)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return LinkResponse{}, fmt.Errorf("build add link request: %w", err)
+		return LinkResponse{}, retry.Unrecoverable(fmt.Errorf("build add link request: %w", err))
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -120,7 +239,7 @@ func (c *Client) AddLink(ctx context.Context, chatID int64, request AddLinkReque
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return LinkResponse{}, fmt.Errorf("send add link request: %w", err)
+		return LinkResponse{}, retry.Unrecoverable(fmt.Errorf("send add link request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -128,29 +247,64 @@ func (c *Client) AddLink(ctx context.Context, chatID int64, request AddLinkReque
 	case http.StatusOK:
 		var result LinkResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return LinkResponse{}, fmt.Errorf("decode add link response: %w", err)
+			return LinkResponse{}, retry.Unrecoverable(fmt.Errorf("decode add link response: %w", err))
 		}
+
 		return result, nil
 	case http.StatusNotFound:
-		return LinkResponse{}, repository.ErrChatNotFound
+		return LinkResponse{}, retry.Unrecoverable(repository.ErrChatNotFound)
 	case http.StatusConflict:
-		return LinkResponse{}, repository.ErrLinkAlreadyTracked
+		return LinkResponse{}, retry.Unrecoverable(repository.ErrLinkAlreadyTracked)
 	default:
-		return LinkResponse{}, parseAPIError(resp)
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return LinkResponse{}, fmt.Errorf("scrapper api returned retryable status: %s", resp.Status)
+		}
+
+		return LinkResponse{}, retry.Unrecoverable(parseAPIError(resp))
 	}
 }
 
 func (c *Client) RemoveLink(ctx context.Context, chatID int64, request RemoveLinkRequest) (LinkResponse, error) {
-	endpoint := fmt.Sprintf("%s/links", c.baseURL)
-
 	body, err := json.Marshal(request)
 	if err != nil {
 		return LinkResponse{}, fmt.Errorf("marshal remove link request: %w", err)
 	}
 
+	var result LinkResponse
+
+	_, err = c.circuitBreaker.Execute(func() (any, error) {
+		err := retry.Do(
+			func() error {
+				response, err := c.removeLink(ctx, chatID, body)
+				if err != nil {
+					return err
+				}
+
+				result = response
+
+				return nil
+			},
+			retry.Attempts(c.retryCfg.Attempts),
+			retry.Delay(c.retryCfg.Delay),
+			retry.DelayType(retry.FixedDelay),
+			retry.Context(ctx),
+		)
+
+		return nil, err
+	})
+	if err != nil {
+		return LinkResponse{}, err
+	}
+
+	return result, nil
+}
+
+func (c *Client) removeLink(ctx context.Context, chatID int64, body []byte) (LinkResponse, error) {
+	endpoint := fmt.Sprintf("%s/links", c.baseURL)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return LinkResponse{}, fmt.Errorf("build remove link request: %w", err)
+		return LinkResponse{}, retry.Unrecoverable(fmt.Errorf("build remove link request: %w", err))
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -158,7 +312,7 @@ func (c *Client) RemoveLink(ctx context.Context, chatID int64, request RemoveLin
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return LinkResponse{}, fmt.Errorf("send remove link request: %w", err)
+		return LinkResponse{}, retry.Unrecoverable(fmt.Errorf("send remove link request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -166,13 +320,18 @@ func (c *Client) RemoveLink(ctx context.Context, chatID int64, request RemoveLin
 	case http.StatusOK:
 		var result LinkResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return LinkResponse{}, fmt.Errorf("decode remove link response: %w", err)
+			return LinkResponse{}, retry.Unrecoverable(fmt.Errorf("decode remove link response: %w", err))
 		}
+
 		return result, nil
 	case http.StatusNotFound:
-		return LinkResponse{}, repository.ErrChatNotFound
+		return LinkResponse{}, retry.Unrecoverable(repository.ErrChatNotFound)
 	default:
-		return LinkResponse{}, parseAPIError(resp)
+		if c.retryCfg.IsRetryableStatus(resp.StatusCode) {
+			return LinkResponse{}, fmt.Errorf("scrapper api returned retryable status: %s", resp.Status)
+		}
+
+		return LinkResponse{}, retry.Unrecoverable(parseAPIError(resp))
 	}
 }
 

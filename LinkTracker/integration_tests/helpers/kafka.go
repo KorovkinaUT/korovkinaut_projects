@@ -72,8 +72,6 @@ func WaitForTopic(t *testing.T, brokers []string, topic string) {
 	for time.Now().Before(deadline) {
 		err := checkTopicReady(brokers, topic)
 		if err == nil {
-			// Kafka может уже вернуть metadata, но writer иногда ещё не успевает
-			// увидеть topic сразу после создания. Небольшая пауза делает тесты стабильнее.
 			time.Sleep(500 * time.Millisecond)
 			return
 		}
@@ -83,6 +81,32 @@ func WaitForTopic(t *testing.T, brokers []string, topic string) {
 	}
 
 	t.Fatalf("topic %q is not ready: %v", topic, lastErr)
+}
+
+func WaitForTopicWritable(t *testing.T, brokers []string, topic string) {
+	t.Helper()
+
+	writer := &kafka.Writer{
+		Addr:         kafka.TCP(brokers...),
+		Topic:        topic,
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: kafka.RequireAll,
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close kafka writer: %v", err)
+		}
+	}()
+
+	RetryUntilSuccess(t, 30*time.Second, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		return writer.WriteMessages(ctx, kafka.Message{
+			Key:   []byte("__topic_probe__"),
+			Value: []byte("__topic_probe__"),
+		})
+	})
 }
 
 func ReadMessage(t *testing.T, brokers []string, topic string) kafka.Message {
@@ -113,6 +137,42 @@ func ReadMessage(t *testing.T, brokers []string, topic string) kafka.Message {
 	}
 
 	return msg
+}
+
+func ReadMessageByKey(t *testing.T, brokers []string, topic string, expectedKey string) kafka.Message {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:   brokers,
+		Topic:     topic,
+		Partition: 0,
+		MinBytes:  1,
+		MaxBytes:  10e6,
+		MaxWait:   time.Second,
+	})
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close kafka reader: %v", err)
+		}
+	}()
+
+	if err := reader.SetOffset(kafka.FirstOffset); err != nil {
+		t.Fatalf("set kafka reader offset: %v", err)
+	}
+
+	for {
+		msg, err := reader.ReadMessage(ctx)
+		if err != nil {
+			t.Fatalf("read kafka message: %v", err)
+		}
+
+		if string(msg.Key) == expectedKey {
+			return msg
+		}
+	}
 }
 
 func RetryUntilSuccess(t *testing.T, timeout time.Duration, action func() error) {

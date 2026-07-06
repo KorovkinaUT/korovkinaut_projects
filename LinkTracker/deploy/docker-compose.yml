@@ -49,6 +49,22 @@ services:
       BOT_HOST: bot
     ports:
       - "${SCRAPPER_PORT:-8081}:${SCRAPPER_PORT:-8081}"
+    networks:
+      - default
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: ./deploy/agent.Dockerfile
+    container_name: link-tracker-agent
+    depends_on:
+      scrapper:
+        condition: service_started
+    env_file:
+      - .env
+    networks:
+      - default
     restart: unless-stopped
 
   bot:
@@ -59,6 +75,8 @@ services:
     depends_on:
       scrapper:
         condition: service_started
+      agent:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -66,6 +84,8 @@ services:
       SCRAPPER_HOST: scrapper
     ports:
       - "${BOT_PORT:-8080}:${BOT_PORT:-8080}"
+    networks:
+      - default
     restart: unless-stopped
 
 volumes:

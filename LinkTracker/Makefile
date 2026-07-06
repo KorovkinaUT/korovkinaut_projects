@@ -53,17 +53,24 @@ run:
 include .env
 
 UPDATES_TRANSPORT ?= KAFKA
-COMPOSE_FILES=-f docker-compose.yml
+CACHE_ENABLED ?= true
+COMPOSE_FILES=-f deploy/docker-compose.yml
 
 ifeq ($(UPDATES_TRANSPORT),KAFKA)
-	COMPOSE_FILES=-f docker-compose.yml -f docker-compose.kafka.yml
+	COMPOSE_FILES += -f deploy/docker-compose.kafka.yml
+endif
+
+
+ifeq ($(CACHE_ENABLED),true)
+	COMPOSE_FILES += -f deploy/docker-compose.valkey.yml
 endif
 
 # Starts docker containers depending on UPDATES_TRANSPORT type
+# and CACHE_ENABLED
 .PHONY: up down
 
 up:
-	docker compose $(COMPOSE_FILES) up --build
+	docker compose --project-directory . --env-file .env $(COMPOSE_FILES) up --build
 
 down:
-	docker compose $(COMPOSE_FILES) down
+	docker compose --project-directory . --env-file .env $(COMPOSE_FILES) down

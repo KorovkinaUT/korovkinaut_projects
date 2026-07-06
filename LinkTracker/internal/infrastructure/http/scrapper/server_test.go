@@ -9,12 +9,14 @@ import (
 	"testing"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/service"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/config"
+	httpinfra "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/http"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/memory"
 )
 
 func TestScrapperServer_AddAndListLink(t *testing.T) {
 	// arrange
-	ts := newTestScrapperServer()
+	ts := newTestScrapperServer(nil)
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
 	if err != nil {
@@ -100,7 +102,7 @@ func TestScrapperServer_AddAndListLink(t *testing.T) {
 
 func TestScrapperServer_AddAndRemoveLink(t *testing.T) {
 	// arrange
-	ts := newTestScrapperServer()
+	ts := newTestScrapperServer(nil)
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
 	if err != nil {
@@ -200,7 +202,7 @@ func TestScrapperServer_AddAndRemoveLink(t *testing.T) {
 
 func TestScrapperServer_RemoveLinkFromNonExistingChat(t *testing.T) {
 	// arrange
-	ts := newTestScrapperServer()
+	ts := newTestScrapperServer(nil)
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
 	if err != nil {
@@ -300,7 +302,7 @@ func TestScrapperServer_RemoveLinkFromNonExistingChat(t *testing.T) {
 
 func TestScrapperServer_AddLinkToNonExistingChat(t *testing.T) {
 	// arrange
-	ts := newTestScrapperServer()
+	ts := newTestScrapperServer(nil)
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
 	if err != nil {
@@ -347,7 +349,7 @@ func TestScrapperServer_AddLinkToNonExistingChat(t *testing.T) {
 
 func TestScrapperServer_WorkWithDeletedChat(t *testing.T) {
 	// arrange
-	ts := newTestScrapperServer()
+	ts := newTestScrapperServer(nil)
 
 	registerReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
 	if err != nil {
@@ -409,7 +411,7 @@ func TestScrapperServer_WorkWithDeletedChat(t *testing.T) {
 
 func TestScrapperServer_DeleteNonExistingChat(t *testing.T) {
 	// arrange
-	ts := newTestScrapperServer()
+	ts := newTestScrapperServer(nil)
 
 	deleteReq, err := http.NewRequest(http.MethodDelete, ts.URL+"/tg-chat/1", nil)
 	if err != nil {
@@ -429,14 +431,60 @@ func TestScrapperServer_DeleteNonExistingChat(t *testing.T) {
 	}
 }
 
-func newTestScrapperServer() *httptest.Server {
+func TestScrapperServer_ReturnsTooManyRequests_WhenRateLimitExceeded(t *testing.T) {
+	// arrange
+	ts := newTestScrapperServer(&config.RateLimitConfig{
+		RPS: 0.001,
+		Burst:             1,
+	})
+	defer ts.Close()
+
+	firstReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/1", nil)
+	if err != nil {
+		t.Fatalf("build first request: %v", err)
+	}
+
+	secondReq, err := http.NewRequest(http.MethodPost, ts.URL+"/tg-chat/2", nil)
+	if err != nil {
+		t.Fatalf("build second request: %v", err)
+	}
+
+	// act
+	firstResp, err := http.DefaultClient.Do(firstReq)
+	if err != nil {
+		t.Fatalf("send first request: %v", err)
+	}
+	defer firstResp.Body.Close()
+
+	secondResp, err := http.DefaultClient.Do(secondReq)
+	if err != nil {
+		t.Fatalf("send second request: %v", err)
+	}
+	defer secondResp.Body.Close()
+
+	// assert
+	if firstResp.StatusCode != http.StatusOK {
+		t.Errorf("unexpected first status: got %d, want %d", firstResp.StatusCode, http.StatusOK)
+	}
+
+	if secondResp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("unexpected second status: got %d, want %d", secondResp.StatusCode, http.StatusTooManyRequests)
+	}
+}
+
+func newTestScrapperServer(rateLimitCfg *config.RateLimitConfig) *httptest.Server {
 	chatRepository := memory.NewChatRepository()
 	subscriptionRepository := memory.NewSubscriptionRepository()
-	subscriptionService := service.NewSubscriptionService(chatRepository, subscriptionRepository)
+	subscriptionService := service.NewSubscriptionService(false, chatRepository, subscriptionRepository, nil, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/tg-chat/", NewTgChatHandler(subscriptionService))
 	mux.Handle("/links", NewLinksHandler(subscriptionService))
 
-	return httptest.NewServer(mux)
+	var handler http.Handler = mux
+	if rateLimitCfg != nil {
+		handler = httpinfra.NewRateLimiter(rateLimitCfg).Middleware(handler)
+	}
+
+	return httptest.NewServer(handler)
 }

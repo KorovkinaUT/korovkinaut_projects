@@ -15,12 +15,17 @@ type ScrapperConfig struct {
 
 	UpdatesTransport string `envconfig:"UPDATES_TRANSPORT" default:"KAFKA"`
 
+	CacheEnabled bool `envconfig:"CACHE_ENABLED" default:"true"`
+
 	BotHost      string `envconfig:"BOT_HOST" default:"localhost"`
 	BotPort      int    `envconfig:"BOT_PORT" default:"8080"`
 	ScrapperHost string `envconfig:"SCRAPPER_HOST" default:"localhost"`
 	ScrapperPort int    `envconfig:"SCRAPPER_PORT" default:"8081"`
 
 	HttpTimeout     time.Duration `envconfig:"HTTP_TIMEOUT" default:"5s"`
+	Retry           *RetryConfig
+	CircuitBreaker  *CircuitBreakerConfig
+	RateLimit       *RateLimitConfig
 	ShutdownTimeout time.Duration `envconfig:"SHUTDOWN_TIMEOUT" default:"10s"`
 
 	GithubBaseURL        string `envconfig:"GITHUB_BASE_URL" default:"https://api.github.com"`
@@ -46,6 +51,16 @@ func LoadScrapperConfig() (*ScrapperConfig, error) {
 			"unsupported UPDATES_TRANSPORT %q: expected one of [HTTP, KAFKA]",
 			cfg.UpdatesTransport,
 		)
+	}
+
+	if err := cfg.Retry.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.CircuitBreaker.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.RateLimit.Validate(); err != nil {
+		return nil, err
 	}
 
 	if cfg.BatchSize <= 0 {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/sender"
@@ -20,14 +20,11 @@ type Checker struct {
 	batchSize    int64
 	workersCount int
 
-	nextMessageID atomic.Int64
-
-	subscriptions *service.SubscriptionService
+	subscriptions service.SubscriptionService
 	parser        *schedulerlink.Service
-	sender        sender.MessageSender
+	sender        sender.RawUpdateSender
 
-	clients    map[schedulerlink.LinkType]LinkClient
-	formatters map[schedulerlink.LinkType]Formatter
+	clients map[schedulerlink.LinkType]LinkClient
 }
 
 type trackedLink struct {
@@ -39,45 +36,37 @@ type checkResult struct {
 	url        string
 	err        error
 	collectErr error
-	problem    *problem
+	problem    *sender.Problem
 }
 
 func NewChecker(
 	logger *slog.Logger,
 	batchSize int64,
 	workersCount int,
-	subscriptions *service.SubscriptionService,
+	subscriptions service.SubscriptionService,
 	parser *schedulerlink.Service,
-	sender sender.MessageSender,
+	sender sender.RawUpdateSender,
 	clients []LinkClient,
-	formatters []Formatter,
 ) *Checker {
 	clientsByType := make(map[schedulerlink.LinkType]LinkClient, len(clients))
 	for _, client := range clients {
 		clientsByType[client.Type()] = client
 	}
 
-	formattersByType := make(map[schedulerlink.LinkType]Formatter, len(formatters))
-	for _, formatter := range formatters {
-		formattersByType[formatter.Type()] = formatter
-	}
-
 	return &Checker{
 		logger:        logger,
 		batchSize:     batchSize,
 		workersCount:  workersCount,
-		nextMessageID: atomic.Int64{},
 		subscriptions: subscriptions,
 		parser:        parser,
 		sender:        sender,
 		clients:       clientsByType,
-		formatters:    formattersByType,
 	}
 }
 
 func (c *Checker) Check(ctx context.Context) error {
 	var offset int64
-	problems := make([]problem, 0)
+	problems := make([]sender.Problem, 0)
 
 	for {
 		batch, err := c.subscriptions.ListTrackedURLs(ctx, c.batchSize, offset)
@@ -92,23 +81,17 @@ func (c *Checker) Check(ctx context.Context) error {
 		// make slice from map for parallel processing
 		trackedLinks := makeTrackedLinks(batch)
 
-		var batchProblems []problem
+		var batchProblems []sender.Problem
 		batchProblems = c.processBatch(ctx, trackedLinks)
 
 		problems = append(problems, batchProblems...)
 		offset += int64(len(batch))
 	}
 
-	problemMessages := buildProblemsMessages(
-		problems,
-		func() int64 { return c.nextMessageID.Add(1) },
-	)
-
-	for _, msg := range problemMessages {
-		if err := c.sender.SendProblems(ctx, msg); err != nil {
+	if len(problems) > 0 {
+		if err := c.sender.SendProblems(ctx, problems); err != nil {
 			c.logger.Error(
 				"failed to send problems message",
-				"chat_ids", msg.TgChatIDs,
 				"error", err,
 			)
 		}
@@ -156,27 +139,19 @@ func (c *Checker) checkURL(ctx context.Context, rawURL string, lastUpdated time.
 		return nil
 	}
 
-	// get text message about updates
-	formatter, ok := c.formatters[parsedLink.Type()]
-	if !ok {
-		return fmt.Errorf("no formatter registered for link type %q", parsedLink.Type())
-	}
-
-	description, err := formatter.Format(rawURL, newEvents)
+	rawEvents, err := makeSenderEvents(parsedLink.Type(), newEvents)
 	if err != nil {
-		return fmt.Errorf("format events for url %q: %w", rawURL, err)
+		return fmt.Errorf("make sender events for url %q: %w", rawURL, err)
 	}
 
-	// send updates to bot
-	updateID := c.nextMessageID.Add(1)
-	err = c.sender.SendUpdate(ctx, sender.UpdateMessage{
-		ID:          updateID,
-		URL:         rawURL,
-		Description: description,
-		TgChatIDs:   chatIDs,
+	// send updates to agent
+	err = c.sender.SendUpdateEvents(ctx, sender.RawUpdateEvents{
+		URL:       rawURL,
+		Events:    rawEvents,
+		TgChatIDs: chatIDs,
 	})
 	if err != nil {
-		return fmt.Errorf("send update for url %q: %w", rawURL, err)
+		return fmt.Errorf("send raw update events for url %q: %w", rawURL, err)
 	}
 
 	// update info about last upodated time in database
@@ -187,7 +162,7 @@ func (c *Checker) checkURL(ctx context.Context, rawURL string, lastUpdated time.
 	return nil
 }
 
-func (c *Checker) processBatch(ctx context.Context, links []trackedLink) []problem {
+func (c *Checker) processBatch(ctx context.Context, links []trackedLink) []sender.Problem {
 	jobs := make(chan trackedLink, len(links))
 	results := make(chan checkResult, len(links))
 
@@ -222,7 +197,7 @@ func (c *Checker) processBatch(ctx context.Context, links []trackedLink) []probl
 	}()
 
 	// aggregate errors from results
-	problems := make([]problem, 0)
+	problems := make([]sender.Problem, 0)
 	for result := range results {
 		if result.err != nil {
 			c.logger.Error(
@@ -234,7 +209,7 @@ func (c *Checker) processBatch(ctx context.Context, links []trackedLink) []probl
 
 		if result.collectErr != nil {
 			c.logger.Error(
-				"failed to collect problem for tracked url",
+				"failed to collect problems for tracked url",
 				"url", result.url,
 				"error", result.collectErr,
 			)
@@ -278,7 +253,7 @@ func makeTrackedLinks(batch map[string]time.Time) []trackedLink {
 	return result
 }
 
-func (c *Checker) getProblem(ctx context.Context, rawURL string, checkErr error) (*problem, error) {
+func (c *Checker) getProblem(ctx context.Context, rawURL string, checkErr error) (*sender.Problem, error) {
 	chatIDs, err := c.subscriptions.ListChatIDsAll(ctx, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("list chat ids for problem url %q: %w", rawURL, err)
@@ -288,7 +263,7 @@ func (c *Checker) getProblem(ctx context.Context, rawURL string, checkErr error)
 		return nil, nil
 	}
 
-	return &problem{
+	return &sender.Problem{
 		URL:     rawURL,
 		Message: checkErr.Error(),
 		ChatIDs: chatIDs,
@@ -305,4 +280,21 @@ func latestEventTime(events []update.Event) time.Time {
 	}
 
 	return latest
+}
+
+func makeSenderEvents(linkType schedulerlink.LinkType, events []update.Event) ([]sender.Event, error) {
+	result := make([]sender.Event, 0, len(events))
+
+	for _, event := range events {
+		result = append(result, sender.Event{
+			Source:       string(linkType),
+			Type:         strings.TrimSpace(event.EventType()),
+			Title:        strings.TrimSpace(event.EventTitle()),
+			Author:       strings.TrimSpace(event.EventAuthor()),
+			CreationTime: event.CreatedAt(),
+			Preview:      strings.TrimSpace(event.EventPreview()),
+		})
+	}
+
+	return result, nil
 }

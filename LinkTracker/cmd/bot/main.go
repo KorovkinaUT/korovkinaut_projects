@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/application/dispatcher"
@@ -26,13 +25,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	var kafkaCfg *config.KafkaConfig
-	if strings.ToUpper(cfg.UpdatesTransport) == "KAFKA" {
-		kafkaCfg, err = config.LoadKafkaConfig()
-		if err != nil {
-			logger.Error("failed to load kafka config", "error", err)
-			os.Exit(1)
-		}
+	kafkaCfg, err := config.LoadKafkaConfig()
+	if err != nil {
+		logger.Error("failed to load kafka config", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -46,7 +42,7 @@ func main() {
 
 	// For communication with scrapper
 	httpClient := &http.Client{Timeout: cfg.HttpTimeout}
-	scrapperClient := scrapperhttp.NewClient(cfg.ScrapperBaseURL(), httpClient)
+	scrapperClient := scrapperhttp.NewClient(cfg.ScrapperBaseURL(), httpClient, cfg.Retry, cfg.CircuitBreaker)
 
 	parser := schedulerlink.NewService()
 
